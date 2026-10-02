@@ -23,6 +23,7 @@ class Block:
     text: str
     fontsize: float
     is_bold: bool
+    line_rights: tuple = ()  # 줄별 오른쪽 끝 x (양쪽정렬 판정용)
 
 
 def _is_header_footer(page_no: int, n_pages: int, y0: float, h: float) -> bool:
@@ -134,7 +135,9 @@ def iter_blocks(pdf_path: str, pages: list[int] | None = None) -> list[Block]:
                 continue
             fs = sum(s["size"] * len(s["text"]) for s in spans) / max(1, sum(len(s["text"]) for s in spans))
             bold = any("bold" in s["font"].lower() or "black" in s["font"].lower() for s in spans)
-            out.append(Block(page=pno, bbox=(x0, y0, x1, y1), text=text, fontsize=float(fs), is_bold=bold))
+            rights = tuple(round(l["bbox"][2], 1) for l in b["lines"])
+            out.append(Block(page=pno, bbox=(x0, y0, x1, y1), text=text, fontsize=float(fs), is_bold=bold,
+                             line_rights=rights))
     doc.close()
     # 읽기 순서: 페이지 내 y → x (2단은 근사: x 중심이 절반 기준)
     return out
@@ -182,7 +185,8 @@ def merge_line_fragments(blocks: list[Block]) -> list[Block]:
                 cur = Block(page=pno, bbox=(x0, y0, x1, y1),
                             text=(cur.text + sep + b.text).strip(),
                             fontsize=(cur.fontsize + b.fontsize) / 2,
-                            is_bold=cur.is_bold and b.is_bold)
+                            is_bold=cur.is_bold and b.is_bold,
+                            line_rights=cur.line_rights + b.line_rights)
             else:
                 out.append(cur)
                 cur = b
@@ -250,7 +254,8 @@ def merge_slide_vertical(blocks: list[Block], max_gap: float = 30.0) -> list[Blo
         out.append(Block(page=members[0].page, bbox=(x0, y0, x1, y1),
                          text=" ".join(b.text for b in members).strip(),
                          fontsize=sum(b.fontsize for b in members) / len(members),
-                         is_bold=all(b.is_bold for b in members)))
+                         is_bold=all(b.is_bold for b in members),
+                         line_rights=tuple(x for b in members for x in b.line_rights)))
     return out
 
 

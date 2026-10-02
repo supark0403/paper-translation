@@ -68,6 +68,10 @@ def main() -> None:
     if kind == "slide":
         blocks = merge_slide_vertical(blocks)
     cands = [b for b in blocks if should_translate(b.text, b.fontsize, kind, b.page)]
+    from src.fontmatch import analyze_document
+    style = analyze_document(args.input, pages)
+    print(f"[style] {'serif' if style.serif else 'sans'} body={style.body_size}pt "
+          f"leading={style.leading} (conf={style.serif_conf})")
     print(f"[extract] total_blocks={len(blocks)} translatable={len(cands)} "
           f"pages={pages if pages else 'all'}")
 
@@ -103,6 +107,7 @@ def main() -> None:
                 "page": b.page,
                 "bbox": tuple(round(v, 1) for v in b.bbox),
                 "text": ko, "fontsize": b.fontsize, "bold": b.is_bold,
+                "line_rights": list(b.line_rights),
             })
             done += len(b.text)
             print(f"[{i+1}/{len(cands)}] p{b.page} en={len(b.text)} ko={len(ko)} "
@@ -117,7 +122,7 @@ def main() -> None:
     suffix = config.LANG_SUFFIX.get(target_lang(), "ko")
     out = args.output or str(config.OUTPUT_DIR / f"{inp.stem}_{suffix}.pdf")
     render_ko_pdf(args.input, translations, out,
-                  font_size_scale=1.0 if kind == "paper" else 0.9)
+                  font_size_scale=1.0 if kind == "paper" else 0.9, style=style)
     print(f"[done] -> {out}")
 
 

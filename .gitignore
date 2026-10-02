@@ -4,3 +4,8 @@ __pycache__/
 uploads/
 outputs/*.pdf
 random_test/*.pdf
+dist/
+dist-clean/
+dist-env/
+build/
+*.spec

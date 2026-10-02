@@ -118,3 +118,13 @@ Web GUI (app.py) ─────────────────── 같�
 - 10개 언어: `config.SUPPORTED_LANGS`, 언어별 프롬프트·폰트·출력 접미사·캐시 분리. `.ttc`는 `subfontIndex` 지정 (MS YaHei는 index 1이 정식 regular임을 실측 확인).
 - 실측: 일본어 `Abstract→抄録`, 문장 번역 정상. 랜덤 4건(Attention/BERT/ResNet/GAN) p0 실번역 성공 — `Figure 1.→그림 1.`, arXiv 날짜 현지화 확인.
 - https://github.com/supark0403/paper-translation 등록 (master).
+
+## 9. 문서 적응형 서체 (V4, 2026-10-03)
+
+- 지적 반영: 단일 레퍼런스 하드코딩(바탕 고정) 폐지. `src/fontmatch.py`가 문서마다 본문 서체를 실측:
+  - serif/sans (내장 폰트명 휴리스틱, 본문 단락 문자 가중 투표)
+  - 본문 크기 중앙값, 행간 중앙값 (이상치 제외, 1.12~1.7 클램프)
+  - 블록별 줄끝 x좌표로 양쪽정렬 판정 → 정렬 추종
+- 언어×스타일 폰트 매트릭스 (`config.FONT_SERIF/FONT_SANS`): 한 명조=바탕/고딕=맑은고딕,
+  중 간체 명조=SimSun/고딕=MS YaHei 등. 실측: ROME/MEMIT/AlphaEdit→serif 10pt, 슬라이드→sans 24pt.
+- exe는 시스템 venv 오염으로 867MB → 격리 venv 빌드로 37MB (`dist-clean/PaperTranslator.exe`, `--windowed`).

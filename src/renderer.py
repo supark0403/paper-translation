@@ -22,21 +22,22 @@ _registered = ""
 _registered_lang = ""
 
 
-def _register_fonts() -> str:
-    """타깃 언어 폰트 등록 후 보통체 이름 반환 (.ttc subfontIndex 지원)."""
+def _register_fonts(serif: bool = True) -> str:
+    """타깃 언어+스타일 폰트 등록 후 보통체 이름 반환 (.ttc subfontIndex 지원)."""
     global _registered, _registered_lang
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
     lang = getattr(config, "TGT_LANG", "Korean")
-    if _registered and _registered_lang == lang:
+    key = (lang, serif)
+    if _registered and _registered_lang == key:
         return _KR
-    regular = next(((c, i) for c, i in config.fonts_for_lang(lang)
+    regular = next(((c, i) for c, i in config.fonts_for_lang(lang, serif)
                     if os.path.exists(c)), None)
     if regular is None:
         raise RuntimeError(f"[{lang}] 사용 가능한 폰트를 찾을 수 없습니다.")
     path, idx = regular
     pdfmetrics.registerFont(TTFont(_KR, path, subfontIndex=idx))
-    bold = next(((c, i) for c, i in config.bold_for_lang(lang)
+    bold = next(((c, i) for c, i in config.bold_for_lang(lang, serif)
                  if os.path.exists(c)), regular)
     try:
         bpath, bidx = bold
@@ -46,7 +47,7 @@ def _register_fonts() -> str:
                                       italic=_KR, boldItalic=_KR_BOLD)
     except Exception:
         pass
-    _registered, _registered_lang = True, lang
+    _registered, _registered_lang = True, key
     return _KR
 
 
@@ -63,13 +64,15 @@ def _norm_items(translations) -> list[dict]:
 
 
 def render_ko_pdf(pdf_path: str, translations, out_path: str,
-                  font_size_scale: float = 0.96) -> str:
+                  font_size_scale: float = 0.96, style=None) -> str:
     from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.platypus import Paragraph
 
     items = _norm_items(translations)
-    _register_fonts()
+    from .fontmatch import DocStyle, block_alignment
+    style = style or DocStyle()
+    _register_fonts(serif=style.serif)
 
     doc = pymupdf.open(pdf_path)
     by_page: dict[int, list[dict]] = {}
@@ -95,12 +98,21 @@ def render_ko_pdf(pdf_path: str, translations, out_path: str,
             w, h = max(10.0, x1 - x0), max(10.0, y1 - y0)
             ko = it["text"]
             is_paper = W < H
-            cap = 14.0 if is_paper else 26.0
-            base = min(float(it.get("fontsize", 10.5)), cap)
+            cap = 15.0 if is_paper else 26.0
+            base = min(float(it.get("fontsize", style.body_size)), cap)
             base = max(6.0, base * font_size_scale)
+            # 정렬: 블록 줄끝 실측 양쪽정렬이면 justify, 아니면 left
+            align = it.get("align")
+            if align is None:
+                if is_paper:
+                    rights = it.get("line_rights") or ()
+                    key = block_alignment(list(rights), x1)
+                    align = TA_JUSTIFY if key == "justify" else TA_LEFT
+                else:
+                    align = TA_LEFT
             _draw_paragraph(c, Paragraph, ParagraphStyle, ko, x0, H - y1, w, h,
-                            base, bool(it.get("bold", False)),
-                            TA_JUSTIFY if is_paper else TA_LEFT)
+                            base, bool(it.get("bold", False)), align,
+                            leading_factor=style.leading)
         c.showPage()
     c.save()
     buf.seek(0)
@@ -120,7 +132,8 @@ def render_ko_pdf(pdf_path: str, translations, out_path: str,
 
 def _draw_paragraph(c, Paragraph, ParagraphStyle, text: str,
                     x: float, y_bottom: float, w: float, h: float,
-                    start_size: float, bold: bool, align=0) -> None:
+                    start_size: float, bold: bool, align=0,
+                    leading_factor: float = 1.32) -> None:
     font = _KR  # 굵기는 <b> 태그로 표현 (family 등록됨)
     size = start_size
     # XML 이스케이프 (ReportLab Paragraph는 < > &를 마크업으로 해석)
@@ -129,7 +142,7 @@ def _draw_paragraph(c, Paragraph, ParagraphStyle, text: str,
         esc = f"<b>{esc}</b>"
     while size >= 6.0:
         style = ParagraphStyle(f"ko{size:.1f}", fontName=font, fontSize=size,
-                               leading=size * 1.32, wordWrap="CJK", alignment=align)
+                               leading=size * leading_factor, wordWrap="CJK", alignment=align)
         p = Paragraph(esc, style)
         need_w, need_h = p.wrap(w, h * 4)
         if need_h <= h + 0.5:
@@ -138,7 +151,7 @@ def _draw_paragraph(c, Paragraph, ParagraphStyle, text: str,
         size -= 0.7
     # 최소 폰트로도 넘치면 잘라서라도 기록
     style = ParagraphStyle("ko_min", fontName=font, fontSize=6.0,
-                           leading=6.0 * 1.32, wordWrap="CJK", alignment=align)
+                           leading=6.0 * leading_factor, wordWrap="CJK", alignment=align)
     p = Paragraph(esc, style)
     need_w, need_h = p.wrap(w, h * 4)
     p.drawOn(c, x, y_bottom)

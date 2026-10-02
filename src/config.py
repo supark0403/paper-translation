@@ -61,45 +61,65 @@ LANG_SUFFIX = {"English": "en", "Korean": "ko", "Japanese": "ja",
                "Spanish": "es", "French": "fr", "German": "de",
                "Vietnamese": "vi", "Indonesian": "id"}
 
-# 타깃 언어별 폰트 [(path, subfontIndex)] — 존재하는 첫 번째 사용
-FONT_MAP = {
+# 타깃 언어별 폰트 [(path, subfontIndex)] — 문서 스타일(serif/sans)에 따라 선택.
+# serif(명조) / sans(고딕) 2계열. 존재하는 첫 번째 사용.
+FONT_SERIF = {
     "Korean": [
         (r"C:\Windows\Fonts\batang.ttc", 0),
         (r"C:\Windows\Fonts\NotoSerifKR-VF.ttf", 0),
+    ],
+    "Japanese": [
+        (r"C:\Windows\Fonts\NotoSerifKR-VF.ttf", 0),
+        (r"C:\Windows\Fonts\msgothic.ttc", 0),
+    ],
+    "Chinese (Simplified)": [
+        (r"C:\Windows\Fonts\simsun.ttc", 0),
+        (r"C:\Windows\Fonts\msyh.ttc", 1),
+    ],
+    "Chinese (Traditional)": [
+        (r"C:\Windows\Fonts\mingliub.ttc", 0),
+        (r"C:\Windows\Fonts\msyh.ttc", 1),
+    ],
+}
+FONT_SANS = {
+    "Korean": [
         (r"C:\Windows\Fonts\malgun.ttf", 0),
+        (r"C:\Windows\Fonts\NotoSansKR-VF.ttf", 0),
     ],
     "Japanese": [
         (r"C:\Windows\Fonts\msgothic.ttc", 0),
-        (r"C:\Windows\Fonts\NotoSansKR-VF.ttf", 0),
     ],
     "Chinese (Simplified)": [
         (r"C:\Windows\Fonts\msyh.ttc", 1),
         (r"C:\Windows\Fonts\simsun.ttc", 0),
     ],
     "Chinese (Traditional)": [
+        (r"C:\Windows\Fonts\msjh.ttc", 0),
         (r"C:\Windows\Fonts\mingliub.ttc", 0),
-        (r"C:\Windows\Fonts\msyh.ttc", 0),
     ],
 }
-LATIN_FONT = [
-    (r"C:\Windows\Fonts\arial.ttf", 0),
-    (r"C:\Windows\Fonts\calibri.ttf", 0),
-]
-BOLD_MAP = {
+LATIN_SERIF = [(r"C:\Windows\Fonts\times.ttf", 0)]
+LATIN_SANS = [(r"C:\Windows\Fonts\arial.ttf", 0),
+              (r"C:\Windows\Fonts\calibri.ttf", 0)]
+BOLD_SERIF = {
     "Korean": [(r"C:\Windows\Fonts\batang.ttc", 0)],
     "Chinese (Simplified)": [(r"C:\Windows\Fonts\msyhbd.ttc", 0)],
 }
 
 
-def fonts_for_lang(lang: str) -> list[tuple[str, int]]:
-    if lang in FONT_MAP:
-        return FONT_MAP[lang]
-    # CJK 외: 수식·한자 혼재 대비 라틴 뒤에 CJK 폴백
-    return LATIN_FONT + FONT_MAP["Chinese (Simplified)"]
+def fonts_for_lang(lang: str, serif: bool = True) -> list[tuple[str, int]]:
+    table = FONT_SERIF if serif else FONT_SANS
+    if lang in table:
+        return table[lang]
+    latin = LATIN_SERIF if serif else LATIN_SANS
+    cjk = FONT_SERIF["Chinese (Simplified)"] if serif else FONT_SANS["Chinese (Simplified)"]
+    return latin + cjk
 
 
-def bold_for_lang(lang: str) -> list[tuple[str, int]]:
-    return BOLD_MAP.get(lang, fonts_for_lang(lang))
+def bold_for_lang(lang: str, serif: bool = True) -> list[tuple[str, int]]:
+    if serif and lang in BOLD_SERIF:
+        return BOLD_SERIF[lang]
+    return fonts_for_lang(lang, serif)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CACHE_DIR = PROJECT_ROOT / ".cache"

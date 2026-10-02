@@ -66,9 +66,22 @@ python -m src.main --input "test/3.AlphaEdit_Null_Space_Cons.pdf" --pages 0 --li
 ## 웹 GUI (의존성 추가 없음, 표준라이브러리만)
 
 ```powershell
-python src/app.py          # http://localhost:8000
+python src/app.py          # http://localhost:8000, 브라우저 자동 실행
 python src/app.py 8081     # 포트 지정
+python src/app.py --no-open  # 브라우저 자동 실행 안 함
 ```
+
+## 더블클릭 실행 (PaperTranslator.exe)
+
+```powershell
+# 깨끗한 venv에서 빌드 (시스템 site-packages의 ML 라이브러리 혼입 방지)
+python -m venv dist-env
+dist-env\Scripts\pip install pymupdf reportlab requests pyinstaller
+dist-env\Scripts\pyinstaller --noconfirm --onefile --windowed --name PaperTranslator --distpath dist-clean src/app.py
+```
+
+`dist-clean\PaperTranslator.exe` 더블클릭 → 브라우저가 자동으로 열립니다.
+종료는 작업관리자로 프로세스 종료. llama.cpp 서버(:8080)는 별도로 켜져 있어야 합니다.
 
 업로드 → 자동분류(paper/slide) → 페이지 지정 → 변환 → 다운로드.
 장문 논문은 페이지 나눠 변환 권장 (로컬 27B 기준 수 분/페이지).

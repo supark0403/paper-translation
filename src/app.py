@@ -105,6 +105,9 @@ def run_job(job_id: str, src_pdf: str, doctype: str, pages: str | None,
             blocks = merge_slide_vertical(blocks)
         cands = [b for b in blocks if should_translate(b.text, b.fontsize, kind, b.page)]
         log(f"추출: 전체 {len(blocks)} 블록 중 번역 대상 {len(cands)}")
+        from src.fontmatch import analyze_document
+        style = analyze_document(src_pdf, wanted)
+        log(f"서체: {'serif' if style.serif else 'sans'} 본문 {style.body_size}pt 자간 {style.leading}")
 
         from src.renderer import render_ko_pdf
         from src.translator import translate_text
@@ -113,12 +116,13 @@ def run_job(job_id: str, src_pdf: str, doctype: str, pages: str | None,
             ko = " ".join(translate_text(p) for p in chunk_paragraph(b.text))
             translations.append({"page": b.page,
                                  "bbox": tuple(round(v, 1) for v in b.bbox),
-                                 "text": ko, "fontsize": b.fontsize, "bold": b.is_bold})
+                                 "text": ko, "fontsize": b.fontsize, "bold": b.is_bold,
+                                 "line_rights": list(b.line_rights)})
             log(f"[{i+1}/{len(cands)}] p{b.page} 번역 {len(b.text)}자 -> {len(ko)}자")
             JOBS[job_id]["progress"] = (i + 1) / max(1, len(cands))
         out = str(config.OUTPUT_DIR / f"{Path(src_pdf).stem}_{config.LANG_SUFFIX.get(tgt_lang, 'ko')}.pdf")
         render_ko_pdf(src_pdf, translations, out,
-                      font_size_scale=1.0 if kind == "paper" else 0.9)
+                      font_size_scale=1.0 if kind == "paper" else 0.9, style=style)
         JOBS[job_id].update(status="done", output=out, src=src_pdf, pages=info["pages"])
         log(f"완료: {out}")
     except Exception as e:
