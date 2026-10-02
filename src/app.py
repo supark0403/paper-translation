@@ -31,7 +31,8 @@ HTML = """<!doctype html><html lang=ko><head><meta charset=utf-8>
 <style>body{font-family:'Malgun Gothic',sans-serif;max-width:760px;margin:32px auto;padding:0 16px}
 .card{border:1px solid #ddd;border-radius:12px;padding:20px;margin:16px 0}
 button{padding:10px 18px;font-size:15px}input,select{font-size:14px;padding:6px}
-.log{background:#111;color:#0f0;padding:12px;border-radius:8px;white-space:pre-wrap;font-size:13px;max-height:300px;overflow:auto}</style>
+.log{background:#111;color:#0f0;padding:12px;border-radius:8px;white-space:pre-wrap;font-size:13px;height:320px;overflow-y:auto}
+.scrollbox{max-height:180px;overflow-y:auto}</style>
 </head><body>
 <h2>논문/PPT 한글화 — 로컬 모델(local-model :8080)</h2>
 <div class=card>모델 상태: {modelstat}</div>
@@ -53,10 +54,11 @@ API 키: <input type=password name=apikey size=36 placeholder="미입력 시 서
 → 번역 <select name=tgtlang><option>Korean</option><option>English</option><option>Japanese</option><option>Chinese (Simplified)</option><option>Chinese (Traditional)</option><option>Spanish</option><option>French</option><option>German</option><option>Vietnamese</option><option>Indonesian</option></select><br><br>
 <button type=submit>한글화 시작</button>
 </form></div>
-<div class=card><h3>완료 파일</h3>{files}</div>
-<div class=card><h3>원문·결과 비교</h3>{compares}</div>
+<div class=card><h3>완료 파일</h3><div class=scrollbox>{files}</div></div>
+<div class=card><h3>원문·결과 비교</h3><div class=scrollbox>{compares}</div></div>
 <div class=card><h3>진행 상황</h3>{progress}</div>
-<div class=card><h3>작업 로그</h3><div class=log>{log}</div></div>
+<div class=card><h3>작업 로그</h3><div class=log id=logbox>{log}</div></div>
+<script>var lb=document.getElementById('logbox');if(lb){lb.scrollTop=lb.scrollHeight;}</script>
 <p style=color:#666>레퍼런스 규칙: 본문·캡션만 한글화, 수식/표내부/그림 원문 유지, Table→표·Fig→그림·Section→절</p>
 </body></html>"""
 
