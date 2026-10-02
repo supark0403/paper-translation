@@ -29,8 +29,13 @@ def build_system_prompt(src: str, tgt: str) -> str:
             "(MDPS, BLAC, FE, ROM, off-line, on-line), proper nouns, model names, numbers and units unchanged. "
             "Localize only the prefix words like Table->표, Figure/Fig.->그림, Section->절 (e.g. 'in Section 4' -> '4절에서는'). "
             "Eq. may stay as Eq. or 식, both allowed. Keep Boolean localization matrix (L), User-defined as-is. "
+            "Never wrap math in $ or LaTeX commands (no \\text, \\(, \\), \\[); "
+            "keep original notation exactly as-is (e.g. ΔW(s), W(base)). "
             "Output ONLY the Korean translation, no explanation."
         )
+    else:
+        base += (" Never wrap math in $ or LaTeX commands; "
+                 "keep original notation exactly as-is.")
     return base
 
 
@@ -55,6 +60,41 @@ def configure(provider: str = "", model: str = "", base_url: str = "",
 
 def target_lang() -> str:
     return _tgt_lang
+
+
+LATEX_SYMBOLS = {
+    "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "epsilon": "ε",
+    "zeta": "ζ", "eta": "η", "theta": "θ", "iota": "ι", "kappa": "κ",
+    "lambda": "λ", "mu": "μ", "nu": "ν", "xi": "ξ", "pi": "π",
+    "rho": "ρ", "sigma": "σ", "tau": "τ", "upsilon": "υ", "phi": "φ",
+    "chi": "χ", "psi": "ψ", "omega": "ω",
+    "Alpha": "Α", "Beta": "Β", "Gamma": "Γ", "Delta": "Δ", "Epsilon": "Ε",
+    "Zeta": "Ζ", "Eta": "Η", "Theta": "Θ", "Iota": "Ι", "Kappa": "Κ",
+    "Lambda": "Λ", "Mu": "Μ", "Nu": "Ν", "Xi": "Ξ", "Pi": "Π",
+    "Rho": "Ρ", "Sigma": "Σ", "Tau": "Τ", "Upsilon": "Υ", "Phi": "Φ",
+    "Chi": "Χ", "Psi": "Ψ", "Omega": "Ω",
+    "times": "×", "cdot": "·", "leq": "≤", "geq": "≥", "neq": "≠",
+    "infty": "∞", "rightarrow": "→", "leftarrow": "←", "approx": "≈",
+    "sum": "∑", "prod": "∏", "int": "∫", "partial": "∂", "sqrt": "√",
+}
+
+
+def sanitize_math(t: str) -> str:
+    """모델이 덧씌운 LaTeX 기호 제거 ($, \\text{}, \\Delta 등)."""
+    import re as _re
+    t = t.replace("$", "")
+    t = _re.sub(r"\\(text|mathrm|mathit|mathbf|boldsymbol|operatorname|emph)\{([^{}]*)\}",
+                r"\2", t)
+    for tok in ("\\(", "\\)", "\\[", "\\]", "\\,", "\\;", "\\!"):
+        t = t.replace(tok, "")
+
+    def _cmd(m: "_re.Match") -> str:
+        return LATEX_SYMBOLS.get(m.group(1), m.group(1))
+    t = _re.sub(r"\\([a-zA-Z]+)", _cmd, t)
+    # 수식 기호 뒤 공백 제거 (Δ W(s) → ΔW(s), 원문 표기 복원)
+    t = _re.sub(r"([Δα-ωΑ-Ω×·≤≥≠∞→←≈∑∏∫∂√]) ([A-Za-z(])", r"\1\2", t)
+    t = _re.sub(r"[ \t]{2,}", " ", t)
+    return t.strip()
 
 
 def last_tps() -> float:
@@ -112,16 +152,17 @@ def translate_text(text: str) -> str:
     cp = _cache_path(text, tag)
     if cp.exists():
         try:
-            return json.loads(cp.read_text(encoding="utf-8"))["ko"]
+            ko = json.loads(cp.read_text(encoding="utf-8"))["ko"]
+            return sanitize_math(ko)  # 구 캐시의 LaTeX 잔재도 정화
         except Exception:
             pass
     try:
-        ko = translate_once(text)
+        ko = sanitize_math(translate_once(text))
     except RuntimeError:
         # 반으로 나눠 재시도 (thinking 토큰 초과 등 대비)
         mid = len(text) // 2
         cut = text.rfind(". ", 0, mid)
         cut = cut + 2 if cut > 0 else mid
-        ko = translate_text(text[:cut]) + " " + translate_text(text[cut:])
+        ko = sanitize_math(translate_text(text[:cut]) + " " + translate_text(text[cut:]))
     cp.write_text(json.dumps({"en": text, "ko": ko}, ensure_ascii=False), encoding="utf-8")
     return ko

@@ -24,6 +24,9 @@ config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 JOBS: dict[str, dict] = {}
 JOB_SEQ = [0]
+TURN_LOCK = threading.Lock()
+NEXT_TURN = [1]  # 다음에 실행할 작업 번호 (FIFO 순차 처리)
+SKIPPED: set[int] = set()
 
 
 HTML = """<!doctype html><html lang=ko><head><meta charset=utf-8>
@@ -75,6 +78,21 @@ def run_job(job_id: str, src_pdf: str, doctype: str, pages: str | None,
         print(f"[{job_id}] {s}", flush=True)
 
     try:
+        JOBS[job_id]["status"] = "waiting"
+        # FIFO 차례 대기 (넣은 순서대로 하나씩 실행)
+        while True:
+            if JOBS[job_id].get("cancel"):
+                with TURN_LOCK:
+                    SKIPPED.add(JOBS[job_id].get("seq", 0))
+                JOBS[job_id].update(status="cancelled")
+                JOBS[job_id]["log"] += "사용자가 작업을 중지했습니다.\n"
+                return
+            with TURN_LOCK:
+                while NEXT_TURN[0] in SKIPPED:
+                    NEXT_TURN[0] += 1
+                if JOBS[job_id].get("seq", 0) == NEXT_TURN[0]:
+                    break
+            time.sleep(0.5)
         JOBS[job_id]["status"] = "running"
         from src.translator import configure as configure_provider
         try:
@@ -122,6 +140,8 @@ def run_job(job_id: str, src_pdf: str, doctype: str, pages: str | None,
             if JOBS[job_id].get("cancel"):
                 JOBS[job_id].update(status="cancelled")
                 log("사용자가 작업을 중지했습니다.")
+                with TURN_LOCK:
+                    NEXT_TURN[0] += 1
                 return
             ko = " ".join(translate_text(p) for p in chunk_paragraph(b.text))
             translations.append({"page": b.page,
@@ -148,9 +168,13 @@ def run_job(job_id: str, src_pdf: str, doctype: str, pages: str | None,
                       font_size_scale=1.0 if kind == "paper" else 0.9, style=style)
         JOBS[job_id].update(status="done", output=out, src=src_pdf, pages=info["pages"])
         log(f"완료: {out}")
+        with TURN_LOCK:
+            NEXT_TURN[0] += 1
     except Exception as e:
         JOBS[job_id].update(status="error")
         JOBS[job_id]["log"] += f"ERROR: {e}\n{traceback.format_exc()}\n"
+        with TURN_LOCK:
+            NEXT_TURN[0] += 1
 
 
 def parse_multipart(handler: BaseHTTPRequestHandler):
@@ -357,13 +381,16 @@ class H(BaseHTTPRequestHandler):
         compares = "".join(
             f'<div><a href="/compare/{jid}">비교하기: {Path(j.get("output","")).name or jid}</a> '
             f'({j["status"]})</div>'
-            for jid, j in list(JOBS.items())[::-1]
+            for jid, j in list(JOBS.items())
             if j.get("output") and j.get("src")
         ) or "(변환 완료 후 표시)"
         prog_rows = []
-        for jid, j in list(JOBS.items())[::-1][:10]:
+        for jid, j in list(JOBS.items())[:10]:
             pct = int(round(j.get("progress", 0.0) * 100))
-            eta = j.get("eta", "") if j["status"] == "running" else j["status"]
+            if j["status"] == "waiting":
+                eta = "대기 중"
+            else:
+                eta = j.get("eta", "") if j["status"] == "running" else j["status"]
             tps = j.get("tps", 0.0) or 0.0
             tps_s = f" · {tps:.0f} tok/s" if j["status"] == "running" and tps > 0 else ""
             name = Path(j.get("output") or j.get("src") or jid).name
@@ -426,7 +453,8 @@ class H(BaseHTTPRequestHandler):
             dest.write_bytes(fdata)
             JOB_SEQ[0] += 1
             jid = f"job{int(time.time())%100000}_{JOB_SEQ[0]}"
-            JOBS[jid] = {"status": "queued", "log": f"업로드: {dest}\n", "progress": 0.0, "output": ""}
+            JOBS[jid] = {"status": "queued", "log": f"업로드: {dest}\n", "progress": 0.0,
+                         "output": "", "seq": JOB_SEQ[0]}
             threading.Thread(target=run_job, args=(jid, str(dest), doctype, pages,
                                                    provider, model, base_url, api_key,
                                                    src_lang, tgt_lang),
