@@ -51,6 +51,25 @@ def _api_error(provider: str, status: int, body) -> ProviderError:
     return ProviderError(f"[{provider}] HTTP {status}: {msg}{hint}")
 
 
+def _tps_from_timings(body: dict, elapsed: float) -> float:
+    """서버 실측 속도 우선, 없으면 토큰수/경과시간."""
+    try:
+        v = float((body.get("timings") or {}).get("predicted_per_second") or 0)
+        if v > 0:
+            return v
+    except (AttributeError, TypeError, ValueError):
+        pass
+    try:
+        n = int((body.get("usage") or {}).get("completion_tokens") or 0)
+        if n <= 0:
+            n = int((body.get("usageMetadata") or {}).get("candidatesTokenCount") or 0)
+        if n > 0 and elapsed > 0:
+            return n / elapsed
+    except (AttributeError, TypeError, ValueError):
+        pass
+    return 0.0
+
+
 @dataclass
 class ChatRequest:
     system: str
@@ -80,6 +99,8 @@ class LocalProvider(BaseProvider):
     def complete(self, req: ChatRequest, timeout: int) -> str:
         user = ("/no_think " if self.no_think else "") + req.user
         system = ("/no_think " if self.no_think else "") + req.system
+        import time as _t
+        t0 = _t.time()
         status, body = _post_json(
             f"{self.base_url}/v1/chat/completions",
             {"model": self.model,
@@ -90,9 +111,11 @@ class LocalProvider(BaseProvider):
         if status != 200 or not isinstance(body, dict):
             raise _api_error(self.name, status, body)
         try:
-            return (body["choices"][0]["message"].get("content") or "").strip()
+            text = (body["choices"][0]["message"].get("content") or "").strip()
         except (KeyError, IndexError, AttributeError) as e:
             raise ProviderError(f"[{self.name}] 응답 파싱 실패: {str(body)[:300]}") from e
+        self.last_tps = _tps_from_timings(body, _t.time() - t0)
+        return text
 
 
 class OpenAICompatProvider(BaseProvider):
@@ -112,6 +135,8 @@ class OpenAICompatProvider(BaseProvider):
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
+        import time as _t
+        t0 = _t.time()
         status, body = _post_json(
             f"{self.base_url}/chat/completions",
             {"model": self.model,
@@ -122,9 +147,11 @@ class OpenAICompatProvider(BaseProvider):
         if status != 200 or not isinstance(body, dict):
             raise _api_error(self.name, status, body)
         try:
-            return (body["choices"][0]["message"].get("content") or "").strip()
+            text = (body["choices"][0]["message"].get("content") or "").strip()
         except (KeyError, IndexError, AttributeError) as e:
             raise ProviderError(f"[{self.name}] 응답 파싱 실패: {str(body)[:300]}") from e
+        self.last_tps = _tps_from_timings(body, _t.time() - t0)
+        return text
 
 
 class AnthropicProvider(BaseProvider):
@@ -142,6 +169,8 @@ class AnthropicProvider(BaseProvider):
         self.api_url = api_url or self.API_URL
 
     def complete(self, req: ChatRequest, timeout: int) -> str:
+        import time as _t
+        t0 = _t.time()
         status, body = _post_json(
             self.api_url,
             {"model": self.model, "max_tokens": req.max_tokens,
@@ -154,9 +183,16 @@ class AnthropicProvider(BaseProvider):
         try:
             texts = [b.get("text", "") for b in body.get("content", [])
                      if isinstance(b, dict) and b.get("type") == "text"]
-            return "".join(texts).strip()
+            text = "".join(texts).strip()
         except AttributeError as e:
             raise ProviderError(f"[{self.name}] 응답 파싱 실패: {str(body)[:300]}") from e
+        try:
+            n = int((body.get("usage") or {}).get("output_tokens") or 0)
+            el = _t.time() - t0
+            self.last_tps = n / el if n > 0 and el > 0 else 0.0
+        except (TypeError, ValueError):
+            self.last_tps = 0.0
+        return text
 
 
 class GeminiProvider(BaseProvider):
@@ -175,6 +211,8 @@ class GeminiProvider(BaseProvider):
         url = self.api_url or (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{self.model}:generateContent")
+        import time as _t
+        t0 = _t.time()
         status, body = _post_json(
             url,
             {"system_instruction": {"parts": {"text": req.system}},
@@ -187,10 +225,12 @@ class GeminiProvider(BaseProvider):
             raise _api_error(self.name, status, body)
         try:
             parts = body["candidates"][0]["content"]["parts"]
-            return "".join(p.get("text", "") for p in parts
+            text = "".join(p.get("text", "") for p in parts
                            if isinstance(p, dict)).strip()
         except (KeyError, IndexError, TypeError) as e:
             raise ProviderError(f"[{self.name}] 응답 파싱 실패: {str(body)[:300]}") from e
+        self.last_tps = _tps_from_timings(body, _t.time() - t0)
+        return text
 
 
 def build_provider(name: str, model: str = "", base_url: str = "",

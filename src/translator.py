@@ -57,6 +57,13 @@ def target_lang() -> str:
     return _tgt_lang
 
 
+def last_tps() -> float:
+    try:
+        return float(getattr(active_provider(), "last_tps", 0.0) or 0.0)
+    except Exception:
+        return 0.0
+
+
 def active_provider() -> BaseProvider:
     global _provider
     if _provider is None:

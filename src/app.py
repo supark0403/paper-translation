@@ -35,7 +35,7 @@ button{padding:10px 18px;font-size:15px}input,select{font-size:14px;padding:6px}
 .scrollbox{max-height:180px;overflow-y:auto}</style>
 </head><body>
 <h2>논문/PPT 한글화 — 로컬 모델(local-model :8080)</h2>
-<div class=card>모델 상태: {modelstat}</div>
+<div class=card>모델 상태: {modelstat} <button onclick="location.reload()">새로고침</button></div>
 <div class=card>
 <form action="/convert" method=post enctype="multipart/form-data">
 PDF 파일 (여러 개 선택 가능): <input type=file name=pdffile accept=".pdf" required multiple><br><br>
@@ -114,6 +114,7 @@ def run_job(job_id: str, src_pdf: str, doctype: str, pages: str | None,
         log(f"서체: {'serif' if style.serif else 'sans'} 본문 {style.body_size}pt 자간 {style.leading}")
 
         from src.renderer import render_ko_pdf
+        from src.translator import last_tps as _last_tps
         from src.translator import translate_text
         translations = []
         t0 = time.time()
@@ -127,7 +128,10 @@ def run_job(job_id: str, src_pdf: str, doctype: str, pages: str | None,
                                  "bbox": tuple(round(v, 1) for v in b.bbox),
                                  "text": ko, "fontsize": b.fontsize, "bold": b.is_bold,
                                  "line_rights": list(b.line_rights)})
-            log(f"[{i+1}/{len(cands)}] p{b.page} 번역 {len(b.text)}자 -> {len(ko)}자")
+            tps = _last_tps()
+            tps_s = f" {tps:.0f} tok/s" if tps > 0 else ""
+            log(f"[{i+1}/{len(cands)}] p{b.page} 번역 {len(b.text)}자 -> {len(ko)}자{tps_s}")
+            JOBS[job_id]["tps"] = tps
             done = i + 1
             JOBS[job_id]["progress"] = done / max(1, len(cands))
             el = max(0.1, time.time() - t0)
@@ -360,12 +364,14 @@ class H(BaseHTTPRequestHandler):
         for jid, j in list(JOBS.items())[::-1][:10]:
             pct = int(round(j.get("progress", 0.0) * 100))
             eta = j.get("eta", "") if j["status"] == "running" else j["status"]
+            tps = j.get("tps", 0.0) or 0.0
+            tps_s = f" · {tps:.0f} tok/s" if j["status"] == "running" and tps > 0 else ""
             name = Path(j.get("output") or j.get("src") or jid).name
             cancel = (f' <form action="/cancel/{jid}" method="post" style="display:inline">'
                       f'<button type="submit">중지</button></form>'
                       if j["status"] in ("queued", "running") else "")
             prog_rows.append(
-                f'<div style="margin:6px 0">{name} — {pct}% {eta}{cancel}'
+                f'<div style="margin:6px 0">{name} — {pct}% {eta}{tps_s}{cancel}'
                 f'<div style="background:#e5e5e5;border-radius:6px">'
                 f'<div style="width:{pct}%;background:#3a7;height:12px;border-radius:6px"></div>'
                 f"</div></div>")
