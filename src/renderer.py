@@ -40,9 +40,9 @@ def _register_fonts(serif: bool = True) -> str:
     bold = next(((c, i) for c, i in config.bold_for_lang(lang, serif)
                  if os.path.exists(c)), regular)
     try:
+        # bold가 regular와 같아도 별도 이름으로 등록해야 <b> 조회가 성공한다
         bpath, bidx = bold
-        if (bpath, bidx) != (path, idx):
-            pdfmetrics.registerFont(TTFont(_KR_BOLD, bpath, subfontIndex=bidx))
+        pdfmetrics.registerFont(TTFont(_KR_BOLD, bpath, subfontIndex=bidx))
         pdfmetrics.registerFontFamily(_KR, normal=_KR, bold=_KR_BOLD,
                                       italic=_KR, boldItalic=_KR_BOLD)
     except Exception:
