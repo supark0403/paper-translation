@@ -1,0 +1,6 @@
+.cache/
+__pycache__/
+*.pyc
+uploads/
+outputs/*.pdf
+random_test/*.pdf
