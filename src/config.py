@@ -64,8 +64,9 @@ LANG_SUFFIX = {"English": "en", "Korean": "ko", "Japanese": "ja",
 # 타깃 언어별 폰트 [(path, subfontIndex)] — 존재하는 첫 번째 사용
 FONT_MAP = {
     "Korean": [
+        (r"C:\Windows\Fonts\batang.ttc", 0),
+        (r"C:\Windows\Fonts\NotoSerifKR-VF.ttf", 0),
         (r"C:\Windows\Fonts\malgun.ttf", 0),
-        (r"C:\Windows\Fonts\NotoSansKR-VF.ttf", 0),
     ],
     "Japanese": [
         (r"C:\Windows\Fonts\msgothic.ttc", 0),
@@ -85,7 +86,7 @@ LATIN_FONT = [
     (r"C:\Windows\Fonts\calibri.ttf", 0),
 ]
 BOLD_MAP = {
-    "Korean": [(r"C:\Windows\Fonts\malgunbd.ttf", 0)],
+    "Korean": [(r"C:\Windows\Fonts\batang.ttc", 0)],
     "Chinese (Simplified)": [(r"C:\Windows\Fonts\msyhbd.ttc", 0)],
 }
 

@@ -64,6 +64,7 @@ def _norm_items(translations) -> list[dict]:
 
 def render_ko_pdf(pdf_path: str, translations, out_path: str,
                   font_size_scale: float = 0.96) -> str:
+    from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.platypus import Paragraph
 
@@ -93,11 +94,13 @@ def render_ko_pdf(pdf_path: str, translations, out_path: str,
             x0, y0, x1, y1 = it["bbox"]
             w, h = max(10.0, x1 - x0), max(10.0, y1 - y0)
             ko = it["text"]
-            cap = 11.0 if W < H else 26.0
+            is_paper = W < H
+            cap = 14.0 if is_paper else 26.0
             base = min(float(it.get("fontsize", 10.5)), cap)
             base = max(6.0, base * font_size_scale)
             _draw_paragraph(c, Paragraph, ParagraphStyle, ko, x0, H - y1, w, h,
-                            base, bool(it.get("bold", False)))
+                            base, bool(it.get("bold", False)),
+                            TA_JUSTIFY if is_paper else TA_LEFT)
         c.showPage()
     c.save()
     buf.seek(0)
@@ -117,7 +120,7 @@ def render_ko_pdf(pdf_path: str, translations, out_path: str,
 
 def _draw_paragraph(c, Paragraph, ParagraphStyle, text: str,
                     x: float, y_bottom: float, w: float, h: float,
-                    start_size: float, bold: bool) -> None:
+                    start_size: float, bold: bool, align=0) -> None:
     font = _KR  # 굵기는 <b> 태그로 표현 (family 등록됨)
     size = start_size
     # XML 이스케이프 (ReportLab Paragraph는 < > &를 마크업으로 해석)
@@ -126,7 +129,7 @@ def _draw_paragraph(c, Paragraph, ParagraphStyle, text: str,
         esc = f"<b>{esc}</b>"
     while size >= 6.0:
         style = ParagraphStyle(f"ko{size:.1f}", fontName=font, fontSize=size,
-                               leading=size * 1.45, wordWrap="CJK")
+                               leading=size * 1.32, wordWrap="CJK", alignment=align)
         p = Paragraph(esc, style)
         need_w, need_h = p.wrap(w, h * 4)
         if need_h <= h + 0.5:
@@ -135,7 +138,7 @@ def _draw_paragraph(c, Paragraph, ParagraphStyle, text: str,
         size -= 0.7
     # 최소 폰트로도 넘치면 잘라서라도 기록
     style = ParagraphStyle("ko_min", fontName=font, fontSize=6.0,
-                           leading=6.0 * 1.45, wordWrap="CJK")
+                           leading=6.0 * 1.32, wordWrap="CJK", alignment=align)
     p = Paragraph(esc, style)
     need_w, need_h = p.wrap(w, h * 4)
     p.drawOn(c, x, y_bottom)

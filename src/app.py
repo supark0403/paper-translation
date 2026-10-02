@@ -34,6 +34,7 @@ button{padding:10px 18px;font-size:15px}input,select{font-size:14px;padding:6px}
 .log{background:#111;color:#0f0;padding:12px;border-radius:8px;white-space:pre-wrap;font-size:13px;max-height:300px;overflow:auto}</style>
 </head><body>
 <h2>논문/PPT 한글화 — 로컬 모델(local-model :8080)</h2>
+<div class=card>모델 상태: {modelstat}</div>
 <div class=card>
 <form action="/convert" method=post enctype="multipart/form-data">
 PDF 파일: <input type=file name=pdffile accept=".pdf" required><br><br>
@@ -174,6 +175,18 @@ def parse_multipart(handler: BaseHTTPRequestHandler):
 THUMBS: dict[tuple, bytes] = {}
 
 
+def model_status() -> str:
+    """llama.cpp 로컬 모델 연결 상태 (2초 타임아웃)."""
+    import json as _json
+    import urllib.request as _url
+    try:
+        with _url.urlopen("http://localhost:8080/health", timeout=2) as r:
+            ok = _json.loads(r.read().decode("utf-8")).get("status") == "ok"
+        return "로컬 모델 연결됨 (local-model :8080)" if ok else "로컬 모델 응답 이상"
+    except Exception:
+        return "로컬 모델 연결 안 됨 — llama.cpp 서버를 먼저 켜세요 (또는 상용 API 선택)"
+
+
 COMPARE_HTML = """<!doctype html><html lang=ko><head><meta charset=utf-8>
 <title>비교하기</title>
 <style>
@@ -294,7 +307,7 @@ class H(BaseHTTPRequestHandler):
             if j.get("output") and j.get("src")
         ) or "(변환 완료 후 표시)"
         log = "\n".join(f"[{jid}] {j['status']} {j.get('output','')}\n{j['log'][-1500:]}" for jid, j in list(JOBS.items())[-5:])
-        self._send(HTML.replace("{files}", files).replace("{compares}", compares).replace("{log}", log or "(대기)"))
+        self._send(HTML.replace("{modelstat}", model_status()).replace("{files}", files).replace("{compares}", compares).replace("{log}", log or "(대기)"))
 
     def do_POST(self):
         if self.path != "/convert":
@@ -336,6 +349,14 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
-    print(f"serve http://localhost:{port}  (uploads/ outputs/)")
-    ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+    import argparse as _ap
+    _p = _ap.ArgumentParser(description="논문/PPT 한글화 웹 GUI")
+    _p.add_argument("port", nargs="?", type=int, default=8000)
+    _p.add_argument("--no-open", action="store_true", help="브라우저 자동 실행 안 함")
+    _a = _p.parse_args()
+    print(f"serve http://localhost:{_a.port}  (uploads/ outputs/)")
+    if not _a.no_open:
+        import threading as _th
+        import webbrowser as _wb
+        _th.Timer(1.2, lambda: _wb.open(f"http://localhost:{_a.port}")).start()
+    ThreadingHTTPServer(("127.0.0.1", _a.port), H).serve_forever()
