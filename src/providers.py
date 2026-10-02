@@ -61,6 +61,7 @@ class ChatRequest:
 
 class BaseProvider:
     name = "base"
+    last_tps: float = 0.0
 
     def complete(self, req: ChatRequest, timeout: int) -> str:
         raise NotImplementedError

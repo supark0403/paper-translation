@@ -59,6 +59,7 @@ API 키: <input type=password name=apikey size=36 placeholder="미입력 시 서
 <div class=card><h3>진행 상황</h3>{progress}</div>
 <div class=card><h3>작업 로그</h3><div class=log id=logbox>{log}</div></div>
 <script>var lb=document.getElementById('logbox');if(lb){lb.scrollTop=lb.scrollHeight;}</script>
+<script>setInterval(function(){fetch('/ping',{method:'POST',keepalive:true});},5000);</script>
 <p style=color:#666>레퍼런스 규칙: 본문·캡션만 한글화, 수식/표내부/그림 원문 유지, Table→표·Fig→그림·Section→절</p>
 </body></html>"""
 
@@ -197,6 +198,30 @@ def parse_multipart(handler: BaseHTTPRequestHandler):
 
 
 THUMBS: dict[tuple, bytes] = {}
+LAST_PING: list[float] = [0.0]
+WATCHDOG_STARTED = [False]
+
+PING_SCRIPT = ("<script>setInterval(function(){"
+               "fetch('/ping',{method:'POST',keepalive:true});},5000);</script>")
+
+
+def _note_ping() -> None:
+    import time as _t
+    LAST_PING[0] = _t.time()
+    if not WATCHDOG_STARTED[0]:
+        WATCHDOG_STARTED[0] = True
+        import threading as _th
+        _th.Thread(target=_watchdog, daemon=True).start()
+
+
+def _watchdog() -> None:
+    """브라우저 탭이 전부 닫히면(25초 무응답) 서버 종료."""
+    import os as _os
+    import time as _t
+    while True:
+        _t.sleep(5)
+        if _t.time() - LAST_PING[0] > 25:
+            _os._exit(0)
 
 
 def model_status() -> str:
@@ -245,6 +270,7 @@ document.addEventListener('keydown',function(e){
   if(e.key==='ArrowLeft')go(cur-1); if(e.key==='ArrowRight')go(cur+1);
 });
 go(0);
+setInterval(function(){fetch('/ping',{method:'POST',keepalive:true});},5000);
 </script></body></html>"""
 
 
@@ -350,6 +376,11 @@ class H(BaseHTTPRequestHandler):
         self._send(HTML.replace("<head>", "<head>" + head_extra).replace("{modelstat}", model_status()).replace("{files}", files).replace("{compares}", compares).replace("{progress}", progress).replace("{log}", log or "(대기)"))
 
     def do_POST(self):
+        if self.path == "/ping":
+            _note_ping()
+            self.send_response(204)
+            self.end_headers()
+            return
         if self.path.startswith("/cancel/"):
             jid = self.path.rsplit("/", 1)[-1]
             j = JOBS.get(jid)
