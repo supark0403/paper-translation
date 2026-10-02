@@ -73,6 +73,19 @@ python src/app.py 8081     # 포트 지정
 업로드 → 자동분류(paper/slide) → 페이지 지정 → 변환 → 다운로드.
 장문 논문은 페이지 나눠 변환 권장 (로컬 27B 기준 수 분/페이지).
 
+**비교하기:** 변환 완료 작업마다 `비교하기` 링크가 생성됩니다.
+원문과 결과물을 좌우로 나란히 두고 ◀ ▶ 버튼·방향키로 두 페이지를 동시에 넘기며 대조할 수 있습니다.
+
+## 번역 언어 (10개)
+
+원문/번역 언어를 각각 선택 (CLI `--src-lang/--tgt-lang`, 웹 드롭다운, 기본 영→한):
+
+English, Korean, Japanese, Chinese (Simplified/Traditional),
+Spanish, French, German, Vietnamese, Indonesian
+
+언어별 폰트 자동 선택 (맑은고딕·MS Gothic·MS YaHei·SimSun·MingLiU·Arial),
+출력 파일명은 언어 접미사 (`_ko/_ja/_zh-CN/_en/...`). 캐시는 언어쌍별로 분리.
+
 ## 구조
 
 ```

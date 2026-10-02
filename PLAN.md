@@ -111,3 +111,10 @@ Web GUI (app.py) ─────────────────── 같�
 - `src/translator.py`는 오케스트레이션(캐시·분할재시도)으로 축소, thinking `/no_think`는 local 전용으로 이동.
 - CLI `--provider/--model/--base-url/--api-key`, 웹 폼 동일 필드(키는 메모리만).
 - `tests/test_providers.py` 스텁 테스트 5종 통과. 실 키 검증은 사용자 키 입력 후 `--pages 0 --limit-chars 200`으로 권장.
+
+## 8. 비교 뷰어 + 다국어 (V3, 2026-10-03)
+
+- 비교하기: `/compare/<job>` — 원문·결과물 좌우 병렬, ◀ ▶ 버튼·방향키·페이지 점프로 동시 넘기기. 썸네일은 서버 렌더(PNG, 80개 캐시).
+- 10개 언어: `config.SUPPORTED_LANGS`, 언어별 프롬프트·폰트·출력 접미사·캐시 분리. `.ttc`는 `subfontIndex` 지정 (MS YaHei는 index 1이 정식 regular임을 실측 확인).
+- 실측: 일본어 `Abstract→抄録`, 문장 번역 정상. 랜덤 4건(Attention/BERT/ResNet/GAN) p0 실번역 성공 — `Figure 1.→그림 1.`, arXiv 날짜 현지화 확인.
+- https://github.com/supark0403/paper-translation 등록 (master).
