@@ -55,6 +55,7 @@ API 키: <input type=password name=apikey size=36 placeholder="미입력 시 서
 </form></div>
 <div class=card><h3>완료 파일</h3>{files}</div>
 <div class=card><h3>원문·결과 비교</h3>{compares}</div>
+<div class=card><h3>진행 상황</h3>{progress}</div>
 <div class=card><h3>작업 로그</h3><div class=log>{log}</div></div>
 <p style=color:#666>레퍼런스 규칙: 본문·캡션만 한글화, 수식/표내부/그림 원문 유지, Table→표·Fig→그림·Section→절</p>
 </body></html>"""
@@ -112,14 +113,23 @@ def run_job(job_id: str, src_pdf: str, doctype: str, pages: str | None,
         from src.renderer import render_ko_pdf
         from src.translator import translate_text
         translations = []
+        t0 = time.time()
         for i, b in enumerate(cands):
+            if JOBS[job_id].get("cancel"):
+                JOBS[job_id].update(status="cancelled")
+                log("사용자가 작업을 중지했습니다.")
+                return
             ko = " ".join(translate_text(p) for p in chunk_paragraph(b.text))
             translations.append({"page": b.page,
                                  "bbox": tuple(round(v, 1) for v in b.bbox),
                                  "text": ko, "fontsize": b.fontsize, "bold": b.is_bold,
                                  "line_rights": list(b.line_rights)})
             log(f"[{i+1}/{len(cands)}] p{b.page} 번역 {len(b.text)}자 -> {len(ko)}자")
-            JOBS[job_id]["progress"] = (i + 1) / max(1, len(cands))
+            done = i + 1
+            JOBS[job_id]["progress"] = done / max(1, len(cands))
+            el = max(0.1, time.time() - t0)
+            left = (len(cands) - done) * (el / done) if cands else 0
+            JOBS[job_id]["eta"] = f"남은 약 {int(left // 60)}분 {int(left % 60)}초" if left >= 1 else "곧 완료"
         out = str(config.OUTPUT_DIR / f"{Path(src_pdf).stem}_{config.LANG_SUFFIX.get(tgt_lang, 'ko')}.pdf")
         if Path(out).exists():
             stem = f"{Path(src_pdf).stem}_{config.LANG_SUFFIX.get(tgt_lang, 'ko')}"
@@ -318,10 +328,36 @@ class H(BaseHTTPRequestHandler):
             for jid, j in list(JOBS.items())[::-1]
             if j.get("output") and j.get("src")
         ) or "(변환 완료 후 표시)"
+        prog_rows = []
+        for jid, j in list(JOBS.items())[::-1][:10]:
+            pct = int(round(j.get("progress", 0.0) * 100))
+            eta = j.get("eta", "") if j["status"] == "running" else j["status"]
+            name = Path(j.get("output") or j.get("src") or jid).name
+            cancel = (f' <form action="/cancel/{jid}" method="post" style="display:inline">'
+                      f'<button type="submit">중지</button></form>'
+                      if j["status"] in ("queued", "running") else "")
+            prog_rows.append(
+                f'<div style="margin:6px 0">{name} — {pct}% {eta}{cancel}'
+                f'<div style="background:#e5e5e5;border-radius:6px">'
+                f'<div style="width:{pct}%;background:#3a7;height:12px;border-radius:6px"></div>'
+                f"</div></div>")
+        progress = "".join(prog_rows) or "(대기 중인 작업 없음)"
+        active = any(j["status"] in ("queued", "running") for j in JOBS.values())
+        head_extra = '<meta http-equiv="refresh" content="3">' if active else ""
         log = "\n".join(f"[{jid}] {j['status']} {j.get('output','')}\n{j['log'][-1500:]}" for jid, j in list(JOBS.items())[-5:])
-        self._send(HTML.replace("{modelstat}", model_status()).replace("{files}", files).replace("{compares}", compares).replace("{log}", log or "(대기)"))
+        self._send(HTML.replace("<head>", "<head>" + head_extra).replace("{modelstat}", model_status()).replace("{files}", files).replace("{compares}", compares).replace("{progress}", progress).replace("{log}", log or "(대기)"))
 
     def do_POST(self):
+        if self.path.startswith("/cancel/"):
+            jid = self.path.rsplit("/", 1)[-1]
+            j = JOBS.get(jid)
+            if j and j["status"] in ("queued", "running"):
+                j["cancel"] = True
+                j["log"] += "중지 요청됨...\n"
+            self.send_response(303)
+            self.send_header("Location", "/")
+            self.end_headers()
+            return
         if self.path != "/convert":
             self.send_response(404)
             self.end_headers()
