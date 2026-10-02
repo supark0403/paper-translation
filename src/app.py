@@ -121,6 +121,12 @@ def run_job(job_id: str, src_pdf: str, doctype: str, pages: str | None,
             log(f"[{i+1}/{len(cands)}] p{b.page} 번역 {len(b.text)}자 -> {len(ko)}자")
             JOBS[job_id]["progress"] = (i + 1) / max(1, len(cands))
         out = str(config.OUTPUT_DIR / f"{Path(src_pdf).stem}_{config.LANG_SUFFIX.get(tgt_lang, 'ko')}.pdf")
+        if Path(out).exists():
+            stem = f"{Path(src_pdf).stem}_{config.LANG_SUFFIX.get(tgt_lang, 'ko')}"
+            n = 1
+            while (config.OUTPUT_DIR / f"{stem}_{n}.pdf").exists():
+                n += 1
+            out = str(config.OUTPUT_DIR / f"{stem}_{n}.pdf")
         render_ko_pdf(src_pdf, translations, out,
                       font_size_scale=1.0 if kind == "paper" else 0.9, style=style)
         JOBS[job_id].update(status="done", output=out, src=src_pdf, pages=info["pages"])
@@ -336,7 +342,12 @@ class H(BaseHTTPRequestHandler):
         tgt_lang = (form.get("tgtlang", "") or "Korean").strip()
         queued = []
         for fname, fdata in ups:
+            # 동명 파일 덮어쓰기 방지 (각 번역본은 항상 별도 파일)
             dest = UPLOAD_DIR / Path(fname).name
+            n = 1
+            while dest.exists():
+                dest = UPLOAD_DIR / f"{Path(fname).stem}_{n}{Path(fname).suffix}"
+                n += 1
             dest.write_bytes(fdata)
             JOB_SEQ[0] += 1
             jid = f"job{int(time.time())%100000}_{JOB_SEQ[0]}"
