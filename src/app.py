@@ -37,7 +37,7 @@ button{padding:10px 18px;font-size:15px}input,select{font-size:14px;padding:6px}
 <div class=card>모델 상태: {modelstat}</div>
 <div class=card>
 <form action="/convert" method=post enctype="multipart/form-data">
-PDF 파일: <input type=file name=pdffile accept=".pdf" required><br><br>
+PDF 파일 (여러 개 선택 가능): <input type=file name=pdffile accept=".pdf" required multiple><br><br>
 문서 종류: <select name=doctype><option value=auto>자동 판별 (Recommended)</option>
 <option value=paper>논문</option><option value=slide>PPT/슬라이드</option></select><br><br>
 페이지 (예: 0-1, 비우면 전체): <input name=pages size=12><br><br>
@@ -156,7 +156,9 @@ def parse_multipart(handler: BaseHTTPRequestHandler):
             fn = "upload.pdf"
             if 'filename="' in h:
                 fn = h.split('filename="', 1)[1].split('"', 1)[0].split("\\")[-1] or fn
-            out["pdffile"] = (fn, data)
+            if not fn.lower().endswith(".pdf"):
+                continue
+            out.setdefault("pdffile", []).append((fn, data))
         elif 'name="doctype"' in h:
             out["doctype"] = data.decode("utf-8", "ignore").strip()
         elif 'name="pages"' in h:
@@ -319,13 +321,10 @@ class H(BaseHTTPRequestHandler):
             self.end_headers()
             return
         form = parse_multipart(self)
-        up = form.get("pdffile")
-        if not up or not up[0]:
-            self._send("파일이 없습니다. <a href='/'>돌아가기</a>")
-            return
-        fname, fdata = up
-        if not fdata.startswith(b"%PDF"):
-            self._send("PDF 파일이 아닙니다. <a href='/'>돌아가기</a>")
+        ups = form.get("pdffile") or []
+        ups = [(fn, fd) for fn, fd in ups if fd.startswith(b"%PDF")]
+        if not ups:
+            self._send("PDF 파일이 없습니다. <a href='/'>돌아가기</a>")
             return
         doctype = form.get("doctype", "auto") or "auto"
         pages = (form.get("pages", "") or "").strip() or None
@@ -335,15 +334,18 @@ class H(BaseHTTPRequestHandler):
         api_key = (form.get("apikey", "") or "").strip()
         src_lang = (form.get("srclang", "") or "English").strip()
         tgt_lang = (form.get("tgtlang", "") or "Korean").strip()
-        dest = UPLOAD_DIR / Path(fname).name
-        dest.write_bytes(fdata)
-        JOB_SEQ[0] += 1
-        jid = f"job{int(time.time())%100000}_{JOB_SEQ[0]}"
-        JOBS[jid] = {"status": "queued", "log": f"업로드: {dest}\n", "progress": 0.0, "output": ""}
-        threading.Thread(target=run_job, args=(jid, str(dest), doctype, pages,
-                                               provider, model, base_url, api_key,
-                                               src_lang, tgt_lang),
-                         daemon=True).start()
+        queued = []
+        for fname, fdata in ups:
+            dest = UPLOAD_DIR / Path(fname).name
+            dest.write_bytes(fdata)
+            JOB_SEQ[0] += 1
+            jid = f"job{int(time.time())%100000}_{JOB_SEQ[0]}"
+            JOBS[jid] = {"status": "queued", "log": f"업로드: {dest}\n", "progress": 0.0, "output": ""}
+            threading.Thread(target=run_job, args=(jid, str(dest), doctype, pages,
+                                                   provider, model, base_url, api_key,
+                                                   src_lang, tgt_lang),
+                             daemon=True).start()
+            queued.append(Path(fname).name)
         self.send_response(303)
         self.send_header("Location", "/")
         self.end_headers()
