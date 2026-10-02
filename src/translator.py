@@ -121,6 +121,46 @@ def last_tps() -> float:
         return 0.0
 
 
+def translate_fragment(frag: str, context: str,
+                       max_tokens: int = config.MAX_TOKENS) -> str:
+    """단 넘김 꼬리: 앞 문맥을 주고 꼬리만 번역."""
+    frag = frag.strip()
+    if not frag:
+        return ""
+    tag = _provider_tag() + "|frag"
+    cp = _cache_path("CTX:" + context[-400:] + "\nFRAG:" + frag, tag)
+    if cp.exists():
+        try:
+            ko = json.loads(cp.read_text(encoding="utf-8"))["ko"]
+            return sanitize_math(ko)
+        except Exception:
+            pass
+    p = active_provider()
+    user = ("Context (do NOT translate, for reference only):\n" + context[-400:]
+            + "\nTranslate ONLY the following part to " + _tgt_lang
+            + ". Output ONLY " + _tgt_lang + ".\n" + frag)
+    system = build_system_prompt(_src_lang, _tgt_lang)
+    last_err = ""
+    for attempt in range(config.RETRY):
+        try:
+            content = p.complete(ChatRequest(system=system, user=user,
+                                             max_tokens=max_tokens,
+                                             temperature=config.TEMPERATURE),
+                                 timeout=config.TIMEOUT_SEC)
+            if content:
+                ko = sanitize_math(_fixup_headers(frag, content))
+                cp.write_text(json.dumps({"en": frag, "ko": ko}, ensure_ascii=False),
+                              encoding="utf-8")
+                return ko
+            last_err = "empty content"
+        except Exception as e:  # noqa: BLE001
+            last_err = str(e)
+            if "API 키" in last_err or "HTTP 401" in last_err or "HTTP 403" in last_err:
+                raise
+        time.sleep(1.0 * (attempt + 1))
+    raise RuntimeError(f"LLM empty response after retry: {last_err}")
+
+
 def active_provider() -> BaseProvider:
     global _provider
     if _provider is None:

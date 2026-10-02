@@ -124,17 +124,31 @@ def main() -> None:
             key = (b.page, tuple(round(v, 1) for v in b.bbox))
             translations[key] = "[MOCK] " + b.text[:120]
     else:
-        from src.translator import translate_text
+        from src.translator import translate_fragment, translate_text
+        from src.extractor import continuation_prev, reading_order
+        import pymupdf as _pm
+        _doc = _pm.open(args.input)
+        _heights = {p: _doc[p].rect.height for p in range(len(_doc))}
+        _doc.close()
+        ordered = reading_order(cands)
+        _prev_of = {}
+        for i, b in enumerate(ordered):
+            _prev_of[id(b)] = ordered[i - 1] if i > 0 else None
         total_chars = sum(len(b.text) for b in cands)
         done = 0
         translations_list: list[dict] = []
         for i, b in enumerate(cands):
-            # 긴 블록은 문장 청크로 나눠 번역 후 합침
-            parts = chunk_paragraph(b.text, max_chars=config.CHUNK_CHARS)
-            ko_parts = []
-            for p in parts:
-                ko_parts.append(translate_text(p))
-            ko = " ".join(ko_parts)
+            prev = continuation_prev(b, _prev_of.get(id(b)), _heights.get(b.page, 792.0))
+            if prev is not None:
+                # 단 넘김 꼬리: 문맥을 주고 꼬리만 번역
+                ko = translate_fragment(b.text, prev.text)
+            else:
+                # 긴 블록은 문장 청크로 나눠 번역 후 합침
+                parts = chunk_paragraph(b.text, max_chars=config.CHUNK_CHARS)
+                ko_parts = []
+                for p in parts:
+                    ko_parts.append(translate_text(p))
+                ko = " ".join(ko_parts)
             translations_list.append({
                 "page": b.page,
                 "bbox": tuple(round(v, 1) for v in b.bbox),

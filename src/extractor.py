@@ -108,9 +108,7 @@ def should_translate(text: str, fontsize: float = 10.0, kind: str = "paper", pag
         if page == 0 and fontsize >= 13 and len(t) >= 20 and len(re.findall(r"[A-Za-z]{2,}", t)) >= 4:
             return True
         return False
-    # 수식 빽빽 블록 스킵 (한 글자 토큰 비율)
-    if len(t) > 60 and math_token_ratio(t) > 0.3:
-        return False
+    # NOTE: 수식 빽빽 블록도 번역한다 (Gemma는 기호 유지하며 번역, P9 폐지)
     # 첫 페이지 대제목: 마침표 없어도 번역
     if page == 0 and fontsize >= 14 and len(re.findall(r"[A-Za-z]{2,}", t)) >= 4 and len(t) < 200:
         return True
@@ -177,7 +175,11 @@ def in_ruled_cell(bbox, rulings: tuple[list, list]) -> bool:
 
 
 def table_skip_rects(pdf_path: str, pages: list[int] | None = None) -> dict[int, list]:
-    """번역 제외 영역: 표(find_tables 2x2+)·테두리 상자·그림(이미지)."""
+    """번역 제외 영역: 그림(이미지) 겹침. (표/박스는 눈금선 규칙이 처리)
+
+    NOTE: 외곽 rect 규칙은 figure 패널이 캡션·본문까지 삼켜서 폐지.
+    find_tables도 heatmap 오탐 위험으로 미사용.
+    """
     import pymupdf as _pm
     doc = _pm.open(pdf_path)
     wanted = set(pages) if pages is not None else set(range(len(doc)))
@@ -188,28 +190,26 @@ def table_skip_rects(pdf_path: str, pages: list[int] | None = None) -> dict[int,
         page = doc[pno]
         rects = []
         try:
-            for tb in page.find_tables():
-                if tb.row_count >= 2 and tb.col_count >= 2:
-                    rects.append(tb.bbox)
-        except Exception:
-            pass
-        try:
-            W, H = page.rect.width, page.rect.height
             for d in page.get_drawings():
                 r = d.get("rect")
                 if not r:
                     continue
-                # stroked 사각 테두리 (면적 < 페이지 80%)
-                if (r.width > 50 and r.height > 20
-                        and r.width * r.height < W * H * 0.8):
-                    rects.append((r.x0, r.y0, r.x1, r.y1))
+                # 외곽선 있는 상자만 (채우기 전용 배경 제외) + 면적 2~80%
+                if d.get("color") is None:
+                    continue
+                if not (r.width > 50 and r.height > 20):
+                    continue
+                W, H = page.rect.width, page.rect.height
+                a = r.width * r.height / (W * H)
+                if 0.02 <= a <= 0.8:
+                    rects.append(((r.x0, r.y0, r.x1, r.y1), "box"))
         except Exception:
             pass
         try:
             for img in page.get_images():
                 try:
                     b = page.get_image_bbox(img)
-                    rects.append((b.x0, b.y0, b.x1, b.y1))
+                    rects.append(((b.x0, b.y0, b.x1, b.y1), "img"))
                 except Exception:
                     continue
         except Exception:
@@ -223,6 +223,18 @@ def table_skip_rects(pdf_path: str, pages: list[int] | None = None) -> dict[int,
 def _inside(x: float, y: float, rect, tol: float = 2.0) -> bool:
     x0, y0, x1, y1 = rect
     return x0 - tol <= x <= x1 + tol and y0 - tol <= y <= y1 + tol
+
+
+def in_skip_rect(cx: float, cy: float, rects: list, text_len: int) -> bool:
+    """box(긴 텍스트만) / img(항상) 판정."""
+    for r, kind in rects:
+        if not _inside(cx, cy, r):
+            continue
+        if kind == "img":
+            return True
+        if text_len > 100:
+            return True
+    return False
 
 
 def iter_blocks(pdf_path: str, pages: list[int] | None = None,
@@ -262,11 +274,6 @@ def iter_blocks(pdf_path: str, pages: list[int] | None = None,
             bw, bh = x1 - x0, y1 - y0
             if bw < 30 and bh > 100:
                 continue
-            # 표·테두리상자·그림 내부 스킵 (중심점 판정)
-            if skip_rects and pno in skip_rects:
-                cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-                if any(_inside(cx, cy, r) for r in skip_rects[pno]):
-                    continue
             # 벡터 그림 내부 짧은 라벨 스킵 (도형 밀집 + 150자 미만)
             if bw * bh > 0:
                 hits = 0
@@ -286,6 +293,11 @@ def iter_blocks(pdf_path: str, pages: list[int] | None = None,
             text = dehyphenate(text).strip()
             if not text:
                 continue
+            # 표·테두리상자·그림 내부 스킵 (중심점 판정; 상자는 긴 텍스트만)
+            if skip_rects and pno in skip_rects:
+                cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+                if in_skip_rect(cx, cy, skip_rects[pno], len(text)):
+                    continue
             # 벡터 그림 내부 짧은 라벨 스킵
             if len(text) < 150 and _fig_dense:
                 continue
@@ -587,21 +599,34 @@ def merge_dangling(blocks: list[Block]) -> list[Block]:
     for b in blocks:
         by_page.setdefault(b.page, []).append(b)
     for pno in sorted(by_page):
-        lst = sorted(by_page[pno], key=lambda b: (b.bbox[1], b.bbox[0]))
+        lst = by_page[pno]
+        page_w = max(b.bbox[2] for b in lst)
+
+        def _col(b: Block) -> int:
+            cx = (b.bbox[0] + b.bbox[2]) / 2
+            if b.bbox[2] - b.bbox[0] > page_w * 0.55:
+                return -1  # 전폭 블록 (제목·그림캡션)
+            return 0 if cx < page_w / 2 else 1
+
+        lst = sorted(lst, key=lambda b: (_col(b), b.bbox[1], b.bbox[0]))
         cur: Block | None = None
         for b in lst:
-            if (cur is not None and len(b.text) < 60
+            # 같은 열에서만 병합 (단 넘김은 문맥 번역으로 별도 처리)
+            if (cur is not None and _col(b) == _col(cur) and len(b.text) < 60
                     and 0 <= b.bbox[1] - cur.bbox[3] <= 40
+                    and not re.search(r"[.!?:\"')\]}»”。]\s*$", cur.text)
                     and abs(cur.fontsize - b.fontsize) <= 1.5
                     and not re.match(r"^(\d+(\.\d+)*|[A-Z](\.\d+)*|Appendix)\s+[A-Z0-9]", b.text)
                     and b.text.lower() not in KNOWN_HEADERS):
                 xov = min(cur.bbox[2], b.bbox[2]) - max(cur.bbox[0], b.bbox[0])
                 wmin = min(cur.bbox[2] - cur.bbox[0], b.bbox[2] - b.bbox[0])
                 if wmin > 0 and xov >= wmin * 0.4:
+                    x0 = min(cur.bbox[0], b.bbox[0])
+                    y0 = min(cur.bbox[1], b.bbox[1])
+                    x1 = max(cur.bbox[2], b.bbox[2])
+                    y1 = max(cur.bbox[3], b.bbox[3])
                     cur = Block(
-                        page=pno,
-                        bbox=(min(cur.bbox[0], b.bbox[0]), min(cur.bbox[1], b.bbox[1]),
-                              max(cur.bbox[2], b.bbox[2]), max(cur.bbox[3], b.bbox[3])),
+                        page=pno, bbox=(x0, y0, x1, y1),
                         text=(cur.text + " " + b.text).strip(),
                         fontsize=(cur.fontsize + b.fontsize) / 2,
                         is_bold=cur.is_bold and b.is_bold,
@@ -613,6 +638,53 @@ def merge_dangling(blocks: list[Block]) -> list[Block]:
         if cur is not None:
             out.append(cur)
     return out
+
+
+def reading_order(blocks: list[Block]) -> list[Block]:
+    """열 기준 읽기 순서 정렬 (단 넘김 추적용)."""
+    by_page: dict[int, list[Block]] = {}
+    for b in blocks:
+        by_page.setdefault(b.page, []).append(b)
+    out: list[Block] = []
+    for pno in sorted(by_page):
+        lst = by_page[pno]
+        page_w = max(b.bbox[2] for b in lst)
+
+        def _col(b: Block) -> int:
+            cx = (b.bbox[0] + b.bbox[2]) / 2
+            if b.bbox[2] - b.bbox[0] > page_w * 0.55:
+                return -1
+            return 0 if cx < page_w / 2 else 1
+
+        out.extend(sorted(lst, key=lambda b: (_col(b), b.bbox[1], b.bbox[0])))
+    return out
+
+
+def is_continuation_frag(b: Block, prev: Block | None) -> bool:
+    """단 넘김 꼬리 여부 (문맥 번역 대상)."""
+    if prev is None or b.page != prev.page or len(b.text) >= 60:
+        return False
+    if re.search(r"[.!?:\"')\]}»”。]\s*$", prev.text):
+        return False
+    if abs(prev.fontsize - b.fontsize) > 1.5:
+        return False
+    if re.match(r"^(\d+(\.\d+)*|[A-Z](\.\d+)*|Appendix)\s+[A-Z0-9]", b.text):
+        return False
+    return True
+
+
+def continuation_prev(b: Block, prev: Block | None, page_h: float) -> Block | None:
+    """문맥 번역용 이전 블록 (위치까지 검증)."""
+    if not is_continuation_frag(b, prev):
+        return None
+    gap = b.bbox[1] - prev.bbox[3]
+    if -50 <= gap <= 120:
+        return prev
+    # 단 넘김: 이전 블록은 왼쪽 아래, 조각은 오른쪽 위
+    if (prev.bbox[2] <= b.bbox[0] and prev.bbox[3] > page_h * 0.5
+            and b.bbox[1] < page_h * 0.45):
+        return prev
+    return None
 
 
 def chunk_paragraph(text: str, max_chars: int = 1100) -> list[str]:

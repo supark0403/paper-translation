@@ -149,7 +149,15 @@ def run_job(job_id: str, src_pdf: str, doctype: str, pages: str | None,
 
         from src.renderer import render_ko_pdf
         from src.translator import last_tps as _last_tps
-        from src.translator import translate_text
+        from src.translator import translate_fragment, translate_text
+        from src.extractor import continuation_prev, reading_order
+        import pymupdf as _pm
+        _doc = _pm.open(src_pdf)
+        _heights = {p: _doc[p].rect.height for p in range(len(_doc))}
+        _doc.close()
+        _ordered = reading_order(cands)
+        _prev_of = {id(b): (_ordered[i - 1] if i > 0 else None)
+                    for i, b in enumerate(_ordered)}
         translations = []
         t0 = time.time()
         for i, b in enumerate(cands):
@@ -159,7 +167,11 @@ def run_job(job_id: str, src_pdf: str, doctype: str, pages: str | None,
                 with TURN_LOCK:
                     NEXT_TURN[0] += 1
                 return
-            ko = " ".join(translate_text(p) for p in chunk_paragraph(b.text))
+            prev = continuation_prev(b, _prev_of.get(id(b)), _heights.get(b.page, 792.0))
+            if prev is not None:
+                ko = translate_fragment(b.text, prev.text)
+            else:
+                ko = " ".join(translate_text(p) for p in chunk_paragraph(b.text))
             translations.append({"page": b.page,
                                  "bbox": tuple(round(v, 1) for v in b.bbox),
                                  "text": ko, "fontsize": b.fontsize, "bold": b.is_bold,
