@@ -91,7 +91,7 @@ class LocalProvider(BaseProvider):
 
     name = "local"
 
-    def __init__(self, base_url: str, model: str, no_think: bool = True):
+    def __init__(self, base_url: str, model: str, no_think: bool = False):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.no_think = no_think
@@ -234,7 +234,7 @@ class GeminiProvider(BaseProvider):
 
 
 def build_provider(name: str, model: str = "", base_url: str = "",
-                   api_key: str = "", no_think: bool = True) -> BaseProvider:
+                   api_key: str = "", no_think: bool = False) -> BaseProvider:
     from . import config
     name = (name or "local").lower()
     if name == "local":

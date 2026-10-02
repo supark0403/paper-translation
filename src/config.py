@@ -3,8 +3,8 @@ import os
 from pathlib import Path
 
 BASE_URL = "http://localhost:8080"
-MODEL = "local-model"
-CONTEXT_LIMIT = 90000
+MODEL = "gemma-local"
+CONTEXT_LIMIT = 180000
 OUTPUT_LIMIT = 16384
 
 # 프로바이더 선택: local | openai-compat | anthropic | gemini
@@ -22,8 +22,8 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-# 번역 호출 기본값 (Qwen3 thinking 대응: /no_think 필수)
-USE_NO_THINK_PREFIX = True
+# 번역 호출 기본값 (thinking 모델일 때만 /no_think 필요 → LocalProvider 참조)
+USE_NO_THINK_PREFIX = False
 TEMPERATURE = 0.1
 MAX_TOKENS = 2000
 TIMEOUT_SEC = 180
