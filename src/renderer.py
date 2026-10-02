@@ -79,6 +79,15 @@ def render_ko_pdf(pdf_path: str, translations, out_path: str,
     for it in items:
         by_page.setdefault(int(it["page"]), []).append(it)
 
+    # 0) 빈 공간 실측 (아래로 박스 확장용): 원본 전체 텍스트 블록 (redact 전)
+    occupancy: dict[int, list] = {}
+    for pno in by_page:
+        try:
+            occupancy[pno] = [b[:4] for b in doc[pno].get_text("blocks")
+                              if b[4].strip()]
+        except Exception:
+            occupancy[pno] = []
+
     # 1) 원문 제거 (텍스트 레이어까지 삭제 → 복사/추출이 한글만)
     for pno, lst in by_page.items():
         page = doc[pno]
@@ -98,7 +107,7 @@ def render_ko_pdf(pdf_path: str, translations, out_path: str,
             w, h = max(10.0, x1 - x0), max(10.0, y1 - y0)
             ko = it["text"]
             is_paper = W < H
-            cap = 15.0 if is_paper else 26.0
+            cap = 15.0 if is_paper else 32.0
             base = min(float(it.get("fontsize", style.body_size)), cap)
             base = max(6.0, base * font_size_scale)
             # 정렬: 블록 줄끝 실측 양쪽정렬이면 justify, 아니면 left
@@ -110,9 +119,12 @@ def render_ko_pdf(pdf_path: str, translations, out_path: str,
                     align = TA_JUSTIFY if key == "justify" else TA_LEFT
                 else:
                     align = TA_LEFT
+            # 아래 빈 공간만큼 박스 확장 허용 (캡션 넘침 방지, 최대 3배)
+            clear = _clearance_below(it["bbox"], occupancy.get(pno, []), H)
+            max_h = h + max(0.0, min(clear - 2.0, h * 3))
             _draw_paragraph(c, Paragraph, ParagraphStyle, ko, x0, H - y1, w, h,
                             base, bool(it.get("bold", False)), align,
-                            leading_factor=style.leading)
+                            leading_factor=style.leading, max_h=max_h)
         c.showPage()
     c.save()
     buf.seek(0)
@@ -130,22 +142,37 @@ def render_ko_pdf(pdf_path: str, translations, out_path: str,
     return out_path
 
 
+def _clearance_below(bbox, others, page_h: float) -> float:
+    """박스 아래 빈 공간 (같은 열 텍스트까지 거리)."""
+    x0, y0, x1, y1 = bbox
+    best = page_h - y1
+    for ox0, oy0, ox1, oy1 in others:
+        if oy0 < y1 - 1:
+            continue
+        if min(x1, ox1) - max(x0, ox0) <= max(20.0, (x1 - x0) * 0.2):
+            continue
+        best = min(best, oy0 - y1)
+    return max(0.0, best)
+
+
 def _draw_paragraph(c, Paragraph, ParagraphStyle, text: str,
                     x: float, y_bottom: float, w: float, h: float,
                     start_size: float, bold: bool, align=0,
-                    leading_factor: float = 1.32) -> None:
+                    leading_factor: float = 1.32, max_h: float | None = None) -> None:
     font = _KR  # 굵기는 <b> 태그로 표현 (family 등록됨)
     size = start_size
     # XML 이스케이프 (ReportLab Paragraph는 < > &를 마크업으로 해석)
     esc = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     if bold:
         esc = f"<b>{esc}</b>"
+    limit = max_h if max_h else h
     while size >= 6.0:
         style = ParagraphStyle(f"ko{size:.1f}", fontName=font, fontSize=size,
                                leading=size * leading_factor, wordWrap="CJK", alignment=align)
         p = Paragraph(esc, style)
         need_w, need_h = p.wrap(w, h * 4)
-        if need_h <= h + 0.5:
+        if need_h <= limit + 0.5:
+            # 확장 시 윗변 고정 (아래로만 늘어남)
             p.drawOn(c, x, y_bottom + h - need_h)
             return
         size -= 0.7

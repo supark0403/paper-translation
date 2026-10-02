@@ -15,7 +15,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import config  # noqa: E402
 from src.classifier import classify  # noqa: E402
-from src.extractor import chunk_paragraph, iter_blocks, merge_line_fragments, merge_slide_vertical, should_translate  # noqa: E402
+from src.extractor import (chunk_paragraph, iter_blocks, merge_dangling,  # noqa: E402
+                         merge_line_fragments, merge_slide_vertical, should_translate,
+                         table_skip_rects)
+
+
+def drop_references(cands) -> list:
+    """References 헤더 이후 블록 제외 (헤더 자체는 번역)."""
+    from src.extractor import REF_HEADERS as _RH
+    cut = None
+    for i, b in enumerate(cands):
+        if b.text.strip().lower() in _RH:
+            cut = i
+            break
+    if cut is None:
+        return cands
+    return cands[:cut + 1]
 
 
 def parse_pages(s: str | None, total: int) -> list[int] | None:
@@ -64,12 +79,29 @@ def main() -> None:
           f"avg_blocks={info['avg_blocks']} avg_fs={info['avg_fontsize']}")
 
     pages = parse_pages(args.pages, info["pages"])
-    blocks = merge_line_fragments(iter_blocks(args.input, pages))
+    from src.extractor import ruling_lines, slide_rulings, table_skip_rects
+    # 표/박스 제외는 논문만 (슬라이드는 박스째 번역)
+    skip = table_skip_rects(args.input, pages) if kind == "paper" else None
+    rules = ruling_lines(args.input, pages)
+    vrul = slide_rulings(args.input, pages)
+    blocks = merge_line_fragments(iter_blocks(args.input, pages, skip, rules,
+                                              ruled_skip=(kind == "paper")),
+                                  rulings=vrul)
     if kind == "slide":
-        blocks = merge_slide_vertical(blocks)
+        from src.extractor import slide_ruling_boxes, split_row_blocks
+        blocks = merge_slide_vertical(blocks, rulings=vrul)
+        blocks = split_row_blocks(args.input, blocks, slide_ruling_boxes(args.input, pages))
+    else:
+        blocks = merge_dangling(blocks)
     cands = [b for b in blocks if should_translate(b.text, b.fontsize, kind, b.page)]
+    cands.sort(key=lambda b: (b.page, b.bbox[1]))
+    if kind == "paper":
+        before = len(cands)
+        cands = drop_references(cands)
+        if len(cands) < before:
+            print(f"[refs] {before - len(cands)} blocks skipped after References")
     from src.fontmatch import analyze_document
-    style = analyze_document(args.input, pages)
+    style = analyze_document(args.input)  # 부분 번역이어도 전체 문서 기준
     print(f"[style] {'serif' if style.serif else 'sans'} body={style.body_size}pt "
           f"leading={style.leading} (conf={style.serif_conf})")
     print(f"[extract] total_blocks={len(blocks)} translatable={len(cands)} "

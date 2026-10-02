@@ -71,7 +71,7 @@ def run_job(job_id: str, src_pdf: str, doctype: str, pages: str | None,
             provider: str = "local", model: str = "", base_url: str = "",
             api_key: str = "", src_lang: str = "English", tgt_lang: str = "Korean"):
     from src.classifier import classify
-    from src.extractor import chunk_paragraph, iter_blocks, merge_line_fragments, merge_slide_vertical, should_translate
+    from src.extractor import chunk_paragraph, iter_blocks, merge_dangling, merge_line_fragments, merge_slide_vertical, ruling_lines, should_translate, table_skip_rects
 
     def log(s: str):
         JOBS[job_id]["log"] += s + "\n"
@@ -122,13 +122,29 @@ def run_job(job_id: str, src_pdf: str, doctype: str, pages: str | None,
         kind = doctype if doctype != "auto" else info["kind"]
         log(f"분류: {kind} (pages={info['pages']}, aspect={info['aspect']})")
 
-        blocks = merge_line_fragments(iter_blocks(src_pdf, wanted))
+        from src.extractor import merge_slide_vertical, slide_ruling_boxes, slide_rulings, split_row_blocks
+        _rul = slide_rulings(src_pdf, wanted)
+        blocks = merge_line_fragments(iter_blocks(
+            src_pdf, wanted,
+            table_skip_rects(src_pdf, wanted) if kind == "paper" else None,
+            ruling_lines(src_pdf, wanted), ruled_skip=(kind == "paper")),
+            rulings=_rul)
         if kind == "slide":
-            blocks = merge_slide_vertical(blocks)
+            blocks = merge_slide_vertical(blocks, rulings=_rul)
+            blocks = split_row_blocks(src_pdf, blocks, slide_ruling_boxes(src_pdf, wanted))
+        else:
+            blocks = merge_dangling(blocks)
         cands = [b for b in blocks if should_translate(b.text, b.fontsize, kind, b.page)]
+        cands.sort(key=lambda b: (b.page, b.bbox[1]))
+        if kind == "paper":
+            from src.extractor import REF_HEADERS as _RH
+            cut = next((i for i, b in enumerate(cands) if b.text.strip().lower() in _RH), None)
+            if cut is not None:
+                log(f"참고문헌 이후 {len(cands) - cut - 1} 블록 제외")
+                cands = cands[:cut + 1]
         log(f"추출: 전체 {len(blocks)} 블록 중 번역 대상 {len(cands)}")
         from src.fontmatch import analyze_document
-        style = analyze_document(src_pdf, wanted)
+        style = analyze_document(src_pdf)  # 부분 번역이어도 전체 문서 기준
         log(f"서체: {'serif' if style.serif else 'sans'} 본문 {style.body_size}pt 자간 {style.leading}")
 
         from src.renderer import render_ko_pdf
@@ -243,12 +259,12 @@ def _note_ping() -> None:
 
 
 def _watchdog() -> None:
-    """브라우저 탭이 전부 닫히면(25초 무응답) 서버 종료."""
+    """브라우저 탭이 전부 닫히면(60초 무응답) 서버 종료."""
     import os as _os
     import time as _t
     while True:
-        _t.sleep(5)
-        if _t.time() - LAST_PING[0] > 25:
+        _t.sleep(10)
+        if _t.time() - LAST_PING[0] > 60:
             _os._exit(0)
 
 
@@ -312,6 +328,7 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(b)
 
     def do_GET(self):
+        _note_ping()
         u = urlparse(self.path)
         if u.path.startswith("/compare/"):
             jid = u.path.rsplit("/", 1)[-1]
@@ -409,6 +426,8 @@ class H(BaseHTTPRequestHandler):
         self._send(HTML.replace("<head>", "<head>" + head_extra).replace("{modelstat}", model_status()).replace("{files}", files).replace("{compares}", compares).replace("{progress}", progress).replace("{log}", log or "(대기)"))
 
     def do_POST(self):
+        if self.path != "/ping":
+            _note_ping()
         if self.path == "/ping":
             _note_ping()
             self.send_response(204)

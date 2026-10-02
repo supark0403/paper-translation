@@ -29,6 +29,9 @@ def build_system_prompt(src: str, tgt: str) -> str:
             "(MDPS, BLAC, FE, ROM, off-line, on-line), proper nouns, model names, numbers and units unchanged. "
             "Localize only the prefix words like Table->표, Figure/Fig.->그림, Section->절 (e.g. 'in Section 4' -> '4절에서는'). "
             "Eq. may stay as Eq. or 식, both allowed. Keep Boolean localization matrix (L), User-defined as-is. "
+            "Fixed terms: Abstract→초록, Acknowledgements→감사의 글, References→참고문헌. "
+            "Translate EVERYTHING except proper nouns, symbols, numbers and abbreviations; "
+            "do not leave English words or phrases untranslated (no parenthetical English). "
             "Never wrap math in $ or LaTeX commands (no \\text, \\(, \\), \\[); "
             "keep original notation exactly as-is (e.g. ΔW(s), W(base)). "
             "Output ONLY the Korean translation, no explanation."
@@ -60,6 +63,20 @@ def configure(provider: str = "", model: str = "", base_url: str = "",
 
 def target_lang() -> str:
     return _tgt_lang
+
+
+HEADER_FIX = {
+    "acknowledgements": "감사의 글",
+    "acknowledgment": "감사의 글",
+}
+
+
+def _fixup_headers(en: str, ko: str) -> str:
+    """용어집 변경이 캐시 무효화 없이 반영되게 확정 교정."""
+    want = HEADER_FIX.get(en.strip().lower())
+    if want and ko.strip() != want:
+        return want
+    return ko
 
 
 LATEX_SYMBOLS = {
@@ -153,7 +170,8 @@ def translate_text(text: str) -> str:
     if cp.exists():
         try:
             ko = json.loads(cp.read_text(encoding="utf-8"))["ko"]
-            return sanitize_math(ko)  # 구 캐시의 LaTeX 잔재도 정화
+            ko = _fixup_headers(text, sanitize_math(ko))  # 구 캐시의 LaTeX 잔재도 정화
+            return ko
         except Exception:
             pass
     try:
@@ -164,5 +182,6 @@ def translate_text(text: str) -> str:
         cut = text.rfind(". ", 0, mid)
         cut = cut + 2 if cut > 0 else mid
         ko = sanitize_math(translate_text(text[:cut]) + " " + translate_text(text[cut:]))
+    ko = _fixup_headers(text, ko)
     cp.write_text(json.dumps({"en": text, "ko": ko}, ensure_ascii=False), encoding="utf-8")
     return ko

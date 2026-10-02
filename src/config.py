@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 BASE_URL = "http://localhost:8080"
-MODEL = "gemma-local"
+MODEL = "local-model"
 CONTEXT_LIMIT = 180000
 OUTPUT_LIMIT = 16384
 
