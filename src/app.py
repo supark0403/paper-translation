@@ -123,26 +123,60 @@ def run_job(job_id: str, src_pdf: str, doctype: str, pages: str | None,
         log(f"분류: {kind} (pages={info['pages']}, aspect={info['aspect']})")
 
         from src.extractor import merge_slide_vertical, slide_ruling_boxes, slide_rulings, split_row_blocks
+        from src.extractor import table_regions
         _rul = slide_rulings(src_pdf, wanted)
+        _regs = table_regions(src_pdf, wanted) if kind == "paper" else None
         blocks = merge_line_fragments(iter_blocks(
             src_pdf, wanted,
             table_skip_rects(src_pdf, wanted) if kind == "paper" else None,
-            ruling_lines(src_pdf, wanted), ruled_skip=(kind == "paper")),
+            ruling_lines(src_pdf, wanted), ruled_skip=(kind == "paper"),
+            table_regs=_regs),
             rulings=_rul)
         if kind == "slide":
             blocks = merge_slide_vertical(blocks, rulings=_rul)
             blocks = split_row_blocks(src_pdf, blocks, slide_ruling_boxes(src_pdf, wanted))
         else:
-            blocks = merge_dangling(blocks)
+            from src.extractor import merge_dangling as _md
+            from src.extractor import refilter as _rf
+            from src.extractor import ruling_lines as _rl
+            blocks = _md(blocks)
+            blocks = split_row_blocks(src_pdf, blocks, col_gap=12.0,
+                                      regs=_regs)
+            blocks = _rf(blocks, table_skip_rects(src_pdf, wanted),
+                         _rl(src_pdf, wanted), _regs)
+            blocks = _md(blocks)
+        from src.extractor import drop_contained
+        blocks = drop_contained(blocks)
         cands = [b for b in blocks if should_translate(b.text, b.fontsize, kind, b.page)]
         cands.sort(key=lambda b: (b.page, b.bbox[1]))
         if kind == "paper":
             from src.extractor import REF_HEADERS as _RH
+            import re as _re2
             cut = next((i for i, b in enumerate(cands) if b.text.strip().lower() in _RH), None)
             if cut is not None:
-                log(f"참고문헌 이후 {len(cands) - cut - 1} 블록 제외")
-                cands = cands[:cut + 1]
+                resume = next((i for i in range(cut + 1, len(cands))
+                               if _re2.match(r"^[A-Z]\s+[A-Z0-9]", cands[i].text.strip())
+                               and len(cands[i].text.strip()) < 80), None)
+                if resume is None:
+                    log(f"참고문헌 이후 {len(cands) - cut - 1} 블록 제외")
+                    cands = cands[:cut + 1]
+                else:
+                    log(f"참고문헌 {len(cands[:cut + 1]) + len(cands) - resume} 블록 중 "
+                        f"{resume - cut - 1} 블록 제외, 부록 재개")
+                    cands = cands[:cut + 1] + cands[resume:]
         log(f"추출: 전체 {len(blocks)} 블록 중 번역 대상 {len(cands)}")
+        if kind == "paper":
+            from src.extractor import collect_fragments
+            import pymupdf as _pmh
+            _dh = _pmh.open(src_pdf)
+            _ph = {p: _dh[p].rect.height for p in range(len(_dh))}
+            _dh.close()
+            _frags = collect_fragments(blocks, cands, _ph)
+            if _frags:
+                log(f"문장 꼬리 {len(_frags)}개 문맥 번역")
+                cands += _frags
+        from src.extractor import dedupe_cands, drop_contained
+        cands = dedupe_cands(drop_contained(cands))
         from src.fontmatch import analyze_document
         style = analyze_document(src_pdf)  # 부분 번역이어도 전체 문서 기준
         log(f"서체: {'serif' if style.serif else 'sans'} 본문 {style.body_size}pt 자간 {style.leading}")

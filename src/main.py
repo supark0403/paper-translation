@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -15,22 +16,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import config  # noqa: E402
 from src.classifier import classify  # noqa: E402
-from src.extractor import (chunk_paragraph, iter_blocks, merge_dangling,  # noqa: E402
+from src.extractor import (chunk_paragraph, collect_fragments, iter_blocks, merge_dangling,  # noqa: E402
                          merge_line_fragments, merge_slide_vertical, should_translate,
                          table_skip_rects)
 
 
 def drop_references(cands) -> list:
-    """References 헤더 이후 블록 제외 (헤더 자체는 번역)."""
+    """References 범위만 제외 (헤더 자체는 번역, 이후 부록이 나오면 재개)."""
     from src.extractor import REF_HEADERS as _RH
-    cut = None
-    for i, b in enumerate(cands):
-        if b.text.strip().lower() in _RH:
-            cut = i
-            break
+    cut = next((i for i, b in enumerate(cands) if b.text.strip().lower() in _RH), None)
     if cut is None:
         return cands
-    return cands[:cut + 1]
+    resume = next((i for i in range(cut + 1, len(cands))
+                   if re.match(r"^[A-Z]\s+[A-Z0-9]", cands[i].text.strip())
+                   and len(cands[i].text.strip()) < 80), None)
+    if resume is None:
+        return cands[:cut + 1]
+    return cands[:cut + 1] + cands[resume:]
 
 
 def parse_pages(s: str | None, total: int) -> list[int] | None:
@@ -79,20 +81,29 @@ def main() -> None:
           f"avg_blocks={info['avg_blocks']} avg_fs={info['avg_fontsize']}")
 
     pages = parse_pages(args.pages, info["pages"])
-    from src.extractor import ruling_lines, slide_rulings, table_skip_rects
+    from src.extractor import ruling_lines, slide_rulings, table_regions, table_skip_rects
     # 표/박스 제외는 논문만 (슬라이드는 박스째 번역)
     skip = table_skip_rects(args.input, pages) if kind == "paper" else None
     rules = ruling_lines(args.input, pages)
+    regs = table_regions(args.input, pages) if kind == "paper" else None
     vrul = slide_rulings(args.input, pages)
     blocks = merge_line_fragments(iter_blocks(args.input, pages, skip, rules,
-                                              ruled_skip=(kind == "paper")),
+                                              ruled_skip=(kind == "paper"),
+                                              table_regs=regs),
                                   rulings=vrul)
     if kind == "slide":
         from src.extractor import slide_ruling_boxes, split_row_blocks
         blocks = merge_slide_vertical(blocks, rulings=vrul)
         blocks = split_row_blocks(args.input, blocks, slide_ruling_boxes(args.input, pages))
     else:
-        blocks = merge_dangling(blocks)
+        from src.extractor import merge_dangling as _md
+        blocks = _md(blocks)
+        from src.extractor import refilter, split_row_blocks
+        blocks = split_row_blocks(args.input, blocks, col_gap=12.0, regs=regs)
+        blocks = refilter(blocks, skip, rules, regs)
+        blocks = _md(blocks)
+    from src.extractor import drop_contained
+    blocks = drop_contained(blocks)
     cands = [b for b in blocks if should_translate(b.text, b.fontsize, kind, b.page)]
     cands.sort(key=lambda b: (b.page, b.bbox[1]))
     if kind == "paper":
@@ -100,6 +111,17 @@ def main() -> None:
         cands = drop_references(cands)
         if len(cands) < before:
             print(f"[refs] {before - len(cands)} blocks skipped after References")
+        # 문장 꼬리 조각 수집 (문맥 번역)
+        import pymupdf as _pmh
+        _dh = _pmh.open(args.input)
+        _ph = {p: _dh[p].rect.height for p in range(len(_dh))}
+        _dh.close()
+        frags = collect_fragments(blocks, cands, _ph)
+        if frags:
+            print(f"[frag] {len(frags)} continuation fragments")
+            cands += frags
+    from src.extractor import dedupe_cands, drop_contained
+    cands = dedupe_cands(drop_contained(cands))
     from src.fontmatch import analyze_document
     style = analyze_document(args.input)  # 부분 번역이어도 전체 문서 기준
     print(f"[style] {'serif' if style.serif else 'sans'} body={style.body_size}pt "

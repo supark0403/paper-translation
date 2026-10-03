@@ -30,6 +30,7 @@ def build_system_prompt(src: str, tgt: str) -> str:
             "Localize only the prefix words like Table->표, Figure/Fig.->그림, Section->절 (e.g. 'in Section 4' -> '4절에서는'). "
             "Eq. may stay as Eq. or 식, both allowed. Keep Boolean localization matrix (L), User-defined as-is. "
             "Fixed terms: Abstract→초록, Acknowledgements→감사의 글, References→참고문헌. "
+            "Keep the translation concise, roughly similar length to the source. "
             "Translate EVERYTHING except proper nouns, symbols, numbers and abbreviations; "
             "do not leave English words or phrases untranslated (no parenthetical English). "
             "Never wrap math in $ or LaTeX commands (no \\text, \\(, \\), \\[); "

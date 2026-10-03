@@ -73,6 +73,13 @@ def render_ko_pdf(pdf_path: str, translations, out_path: str,
     from .fontmatch import DocStyle, block_alignment
     style = style or DocStyle()
     _register_fonts(serif=style.serif)
+    import os as _os
+    _debug = _os.environ.get("RENDER_DEBUG", "") == "1"
+    if _debug:
+        for it in items:
+            print(f"[render] p{it['page']} y={it['bbox'][1]:.0f}-{it['bbox'][3]:.0f} "
+                  f"x={it['bbox'][0]:.0f}-{it['bbox'][2]:.0f} len={len(it['text'])} "
+                  f"{it['text'][:45]!r}")
 
     doc = pymupdf.open(pdf_path)
     by_page: dict[int, list[dict]] = {}
@@ -110,15 +117,18 @@ def render_ko_pdf(pdf_path: str, translations, out_path: str,
             cap = 15.0 if is_paper else 32.0
             base = min(float(it.get("fontsize", style.body_size)), cap)
             base = max(6.0, base * font_size_scale)
-            # 정렬: 블록 줄끝 실측 양쪽정렬이면 justify, 아니면 left
+            # 정렬: CJK는 양쪽정렬 시 글자 겹침 버그 → 좌측 고정.
+            # 라틴 타깃만 원문 정렬 추종.
             align = it.get("align")
             if align is None:
-                if is_paper:
+                cjk = getattr(config, "TGT_LANG", "Korean") in (
+                    "Korean", "Japanese", "Chinese (Simplified)", "Chinese (Traditional)")
+                if cjk or not is_paper:
+                    align = TA_LEFT
+                else:
                     rights = it.get("line_rights") or ()
                     key = block_alignment(list(rights), x1)
                     align = TA_JUSTIFY if key == "justify" else TA_LEFT
-                else:
-                    align = TA_LEFT
             # 아래 빈 공간만큼 박스 확장 허용 (캡션 넘침 방지, 최대 3배)
             clear = _clearance_below(it["bbox"], occupancy.get(pno, []), H)
             max_h = h + max(0.0, min(clear - 2.0, h * 3))
@@ -171,11 +181,15 @@ def _draw_paragraph(c, Paragraph, ParagraphStyle, text: str,
                                leading=size * leading_factor, wordWrap="CJK", alignment=align)
         p = Paragraph(esc, style)
         need_w, need_h = p.wrap(w, h * 4)
-        if need_h <= limit + 0.5:
+        # 높이뿐 아니라 폭 넘침(꺾이지 않는 라틴 장치가 옆 열/표를 침범)도 축소
+        if need_h <= limit + 0.5 and need_w <= w + 1.0:
             # 확장 시 윗변 고정 (아래로만 늘어남)
             p.drawOn(c, x, y_bottom + h - need_h)
             return
         size -= 0.7
+    # 최소 폰트로도 넘치면 일단 그리고 경고 (원인 추적용)
+    import sys as _sys2
+    print(f"[overflow] box_h={h:.0f} limit={limit:.0f} text={text[:60]!r}", file=_sys2.stderr, flush=True)
     # 최소 폰트로도 넘치면 잘라서라도 기록
     style = ParagraphStyle("ko_min", fontName=font, fontSize=6.0,
                            leading=6.0 * leading_factor, wordWrap="CJK", alignment=align)
