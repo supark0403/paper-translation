@@ -126,11 +126,13 @@ def run_job(job_id: str, src_pdf: str, doctype: str, pages: str | None,
         from src.extractor import table_regions
         _rul = slide_rulings(src_pdf, wanted)
         _regs = table_regions(src_pdf, wanted) if kind == "paper" else None
+        from src.extractor import equation_bands as _eb2
+        _ebands = _eb2(src_pdf, wanted) if kind == "paper" else None
         blocks = merge_line_fragments(iter_blocks(
             src_pdf, wanted,
             table_skip_rects(src_pdf, wanted) if kind == "paper" else None,
             ruling_lines(src_pdf, wanted), ruled_skip=(kind == "paper"),
-            table_regs=_regs),
+            table_regs=_regs, eq_bands=_ebands),
             rulings=_rul)
         if kind == "slide":
             blocks = merge_slide_vertical(blocks, rulings=_rul)
@@ -151,12 +153,16 @@ def run_job(job_id: str, src_pdf: str, doctype: str, pages: str | None,
         cands.sort(key=lambda b: (b.page, b.bbox[1]))
         if kind == "paper":
             from src.extractor import REF_HEADERS as _RH
-            import re as _re2
+            from src.extractor import appendix_start as _ast
             cut = next((i for i, b in enumerate(cands) if b.text.strip().lower() in _RH), None)
             if cut is not None:
-                resume = next((i for i in range(cut + 1, len(cands))
-                               if _re2.match(r"^[A-Z]\s+[A-Z0-9]", cands[i].text.strip())
-                               and len(cands[i].text.strip()) < 80), None)
+                _pos = _ast(src_pdf)
+                if _pos is not None:
+                    _pg, _yy = _pos
+                    resume = next((i for i in range(cut + 1, len(cands))
+                                   if (cands[i].page, cands[i].bbox[1]) >= (_pg, _yy - 1.0)), None)
+                else:
+                    resume = None
                 if resume is None:
                     log(f"참고문헌 이후 {len(cands) - cut - 1} 블록 제외")
                     cands = cands[:cut + 1]
@@ -219,6 +225,20 @@ def run_job(job_id: str, src_pdf: str, doctype: str, pages: str | None,
             el = max(0.1, time.time() - t0)
             left = (len(cands) - done) * (el / done) if cands else 0
             JOBS[job_id]["eta"] = f"남은 약 {int(left // 60)}분 {int(left % 60)}초" if left >= 1 else "곧 완료"
+        if kind == "paper":
+            # redact 분리: 수식 밴드·참고문헌 zonas 원문 보존 (렌더 박스는 유지)
+            from src.extractor import equation_bands as _eb3
+            from src.extractor import refs_zone as _rz3
+            from src.extractor import subtract_bands as _sb3
+            _ebm = _eb3(src_pdf, wanted)
+            _rzm = _rz3(src_pdf)
+            _bm: dict[int, list] = {}
+            for _p, _bl in list(_ebm.items()) + list(_rzm.items()):
+                _bm.setdefault(_p, []).extend(_bl)
+            for _it in translations:
+                _pb = _bm.get(int(_it["page"]), [])
+                _it["redact"] = [tuple(round(v, 1) for v in r)
+                                 for r in _sb3(_it["bbox"], _pb)] if _pb else None
         out = str(config.OUTPUT_DIR / f"{Path(src_pdf).stem}_{config.LANG_SUFFIX.get(tgt_lang, 'ko')}.pdf")
         if Path(out).exists():
             stem = f"{Path(src_pdf).stem}_{config.LANG_SUFFIX.get(tgt_lang, 'ko')}"

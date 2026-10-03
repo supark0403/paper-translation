@@ -21,15 +21,20 @@ from src.extractor import (chunk_paragraph, collect_fragments, iter_blocks, merg
                          table_skip_rects)
 
 
-def drop_references(cands) -> list:
-    """References 범위만 제외 (헤더 자체는 번역, 이후 부록이 나오면 재개)."""
+def drop_references(cands, blocks=None, pdf_path=None) -> list:
+    """References 범위만 제외 (헤더 자체는 번역, 이후 부록이 나오면 재개).
+    부록 시작은 PDF 원시 텍스트 기준으로 찾음 (그룹핑 무관)."""
     from src.extractor import REF_HEADERS as _RH
+    from src.extractor import appendix_start as _ast
     cut = next((i for i, b in enumerate(cands) if b.text.strip().lower() in _RH), None)
     if cut is None:
         return cands
-    resume = next((i for i in range(cut + 1, len(cands))
-                   if re.match(r"^[A-Z]\s+[A-Z0-9]", cands[i].text.strip())
-                   and len(cands[i].text.strip()) < 80), None)
+    resume = None
+    pos = _ast(pdf_path if pdf_path else blocks)
+    if pos is not None:
+        pg, yy = pos
+        resume = next((i for i in range(cut + 1, len(cands))
+                       if (cands[i].page, cands[i].bbox[1]) >= (pg, yy - 1.0)), None)
     if resume is None:
         return cands[:cut + 1]
     return cands[:cut + 1] + cands[resume:]
@@ -87,9 +92,11 @@ def main() -> None:
     rules = ruling_lines(args.input, pages)
     regs = table_regions(args.input, pages) if kind == "paper" else None
     vrul = slide_rulings(args.input, pages)
+    from src.extractor import equation_bands as _eb
+    ebands = _eb(args.input, pages) if kind == "paper" else None
     blocks = merge_line_fragments(iter_blocks(args.input, pages, skip, rules,
                                               ruled_skip=(kind == "paper"),
-                                              table_regs=regs),
+                                              table_regs=regs, eq_bands=ebands),
                                   rulings=vrul)
     if kind == "slide":
         from src.extractor import slide_ruling_boxes, split_row_blocks
@@ -108,7 +115,7 @@ def main() -> None:
     cands.sort(key=lambda b: (b.page, b.bbox[1]))
     if kind == "paper":
         before = len(cands)
-        cands = drop_references(cands)
+        cands = drop_references(cands, pdf_path=args.input)
         if len(cands) < before:
             print(f"[refs] {before - len(cands)} blocks skipped after References")
         # 문장 꼬리 조각 수집 (문맥 번역)
@@ -181,6 +188,18 @@ def main() -> None:
             print(f"[{i+1}/{len(cands)}] p{b.page} en={len(b.text)} ko={len(ko)} "
                   f"({done}/{total_chars}) :: {b.text[:70]!r} -> {ko[:70]!r}")
         translations = translations_list  # type: ignore[assignment]
+    if kind == "paper" and isinstance(translations, list):
+        # redact 분리: 수식 밴드·참고문헌 zonas 원문 보존 (렌더 박스는 유지)
+        from src.extractor import equation_bands, refs_zone, subtract_bands
+        _eb = equation_bands(args.input, pages)
+        _rz = refs_zone(args.input)
+        _bands: dict[int, list] = {}
+        for _p, _bl in list(_eb.items()) + list(_rz.items()):
+            _bands.setdefault(_p, []).extend(_bl)
+        for _it in translations:
+            _pb = _bands.get(int(_it["page"]), [])
+            _it["redact"] = [tuple(round(v, 1) for v in r)
+                             for r in subtract_bands(_it["bbox"], _pb)] if _pb else None
 
     # 렌더: bbox 키 소수점 이슈 — renderer가 같은 좌표계를 쓰므로 그대로 전달
     # (iter_blocks bbox를 round한 값과 동일해야 함에 주의)

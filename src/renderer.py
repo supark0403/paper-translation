@@ -96,10 +96,13 @@ def render_ko_pdf(pdf_path: str, translations, out_path: str,
             occupancy[pno] = []
 
     # 1) 원문 제거 (텍스트 레이어까지 삭제 → 복사/추출이 한글만)
+    # redact 키가 있으면 밴드 제외 rect만 지움 (수식·참고문헌 보존)
     for pno, lst in by_page.items():
         page = doc[pno]
         for it in lst:
-            page.add_redact_annot(pymupdf.Rect(*it["bbox"]), fill=(1, 1, 1))
+            rects = it.get("redact") or [it["bbox"]]
+            for r in rects:
+                page.add_redact_annot(pymupdf.Rect(*r), fill=(1, 1, 1))
         page.apply_redactions()
 
     # 2) ReportLab 오버레이 생성 (전체 페이지 수 동일, 번역 없는 페이지는 빈칸)
