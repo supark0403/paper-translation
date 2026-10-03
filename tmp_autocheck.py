@@ -10,12 +10,26 @@ def check(orig_path, ko_path, ref_pages=frozenset()):
     orig = pymupdf.open(orig_path)
     ko = pymupdf.open(ko_path)
     assert len(orig) == len(ko), "페이지 수 불일치"
-    # 참고문헌 시작 페이지 자동 제외 (원문 기준, 헤더 이후 원문 유지가 정책)
+    # 참고문헌 구간만 제외 (원문 기준; 부록은 검사 유지)
+    import re as _re
+    ref_start = None
     for i in range(len(orig)):
         t = orig[i].get_text().strip().split("\n")
-        if any(x.strip().lower() in ("references", "bibliography") for x in t[:10]):
-            ref_pages = ref_pages | frozenset(range(i, len(ko)))
+        if any(x.strip().lower() in ("references", "bibliography") for x in t):
+            ref_start = i
             break
+    if ref_start is not None:
+        ref_end = len(ko)
+        for j in range(ref_start + 1, len(orig)):
+            lines = [x.strip() for x in orig[j].get_text().strip().split("\n") if x.strip()]
+            short = [x for x in lines[:12] if len(x) < 80]
+            if any(_re.match(r"^(\d+(\.\d+)*|[A-Z](\.\d+)+|Appendix)\s*(?![A-Z]\s)(?![A-Z][^A-Za-z])[A-Z]", x)
+                    or (len(x) >= 4 and x == x.upper() and _re.match(r"^[A-Z]{2,}[A-Z ]", x)
+                        and not _re.search(r"\d", x))
+                   for x in short):
+                ref_end = j
+                break
+        ref_pages = ref_pages | frozenset(range(ref_start, ref_end))
     issues = []
     for i in range(len(ko)):
         if i in ref_pages:
@@ -53,11 +67,14 @@ def check(orig_path, ko_path, ref_pages=frozenset()):
         m = LATEX_PAT.search(kt)
         if m:
             issues.append((i, "LATEX", m.group(0)))
-        # d) 수식번호 소실 (4자리 연도 인용은 제외)
+        # d) 수식번호 소실 (4자리 연도 인용은 제외, 공백 변형 허용)
         for e in set(EQ_PAT.findall(ot)):
-            if len(e) > 3 and e not in kt and not re.fullmatch(r"\((19|20)\d{2}[a-c]?\)", e):
-                issues.append((i, "EQ-LOST", e))
-                break
+            if len(e) > 3 and not re.fullmatch(r"\((19|20)\d{2}[a-c]?\)", e):
+                num = re.fullmatch(r"\((\d+)([a-c]?)\)", e)
+                pat = r"\(\s*" + num.group(1) + r"\s*" + num.group(2) + r"\s*\)" if num else re.escape(e)
+                if not re.search(pat, kt):
+                    issues.append((i, "EQ-LOST", e))
+                    break
         # e) 긴 영문 잔류 (번역 누락 의심)
         for (x0, y0, x1, y1), t in koblocks:
             en = re.findall(r"[A-Za-z]{4,}", t)

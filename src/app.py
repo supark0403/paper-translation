@@ -139,14 +139,17 @@ def run_job(job_id: str, src_pdf: str, doctype: str, pages: str | None,
             blocks = split_row_blocks(src_pdf, blocks, slide_ruling_boxes(src_pdf, wanted))
         else:
             from src.extractor import merge_dangling as _md
+            from src.extractor import band_presplit as _bp
             from src.extractor import refilter as _rf
             from src.extractor import ruling_lines as _rl
-            blocks = _md(blocks)
+            blocks = _md(blocks, None, _regs)
+            blocks = _bp(src_pdf, blocks, _ebands, _regs)
             blocks = split_row_blocks(src_pdf, blocks, col_gap=12.0,
                                       regs=_regs)
+            blocks = _bp(src_pdf, blocks, _ebands, _regs)
             blocks = _rf(blocks, table_skip_rects(src_pdf, wanted),
                          _rl(src_pdf, wanted), _regs)
-            blocks = _md(blocks)
+            blocks = _md(blocks, _ebands, _regs)
         from src.extractor import drop_contained
         blocks = drop_contained(blocks)
         cands = [b for b in blocks if should_translate(b.text, b.fontsize, kind, b.page)]

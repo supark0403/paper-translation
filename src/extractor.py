@@ -86,9 +86,9 @@ def should_translate(text: str, fontsize: float = 10.0, kind: str = "paper", pag
             return False
     # 섹션 헤더는 짧아도 번역. 번호 있는 것(1, 5.1, B.2, C.1.2, F) + Appendix.
     # 번호 없는 ALL-CAPS(ETHICS STATEMENT 등)는 원문 유지 (Step/User-defined 규칙과 일관).
-    # 한 글자 헤더는 점 번호 필수 (수식 조각 'L X ...' 오인 방지).
+    # 한 글자 헤더는 점 번호 필수, 숫자 헤더는 한 글자 뒤따름 금지 (수식 조각 오인 방지).
     if len(t) < 120:
-        if re.match(r"^\d+(\.\d+)*\s+[A-Z0-9]", t):
+        if re.match(r"^\d+(\.\d+)*\s+(?![A-Z]\s)(?![A-Z][^A-Za-z])[A-Z0-9]", t):
             return True
         if re.match(r"^[A-Z](\.\d+)+\s+[A-Z0-9]", t):
             return True
@@ -206,6 +206,22 @@ def table_regions(pdf_path: str, pages: list[int] | None = None) -> dict[int, li
         except Exception:
             pass
         lines.sort(key=lambda t: t[2])
+        # 문장형 줄 (표 사이 본문·캡션 감지용)
+        sent_lines = []
+        try:
+            _pg = doc[pno]
+            for lb in _pg.get_text("dict")["blocks"]:
+                if lb["type"] != 0:
+                    continue
+                for l in lb["lines"]:
+                    tx = "".join(s["text"] for s in l["spans"])
+                    # 표 머리글(↑ 등 화살표)·표 소제목(짧음)은 문장으로 보지 않음
+                    if len(tx) >= 60 and sum(c.islower() for c in tx) >= 20:
+                        if re.search(r"[↑↓→←]", tx):
+                            continue
+                        sent_lines.append((l["bbox"][0], l["bbox"][1], l["bbox"][2], l["bbox"][3]))
+        except Exception:
+            pass
         groups: list[list] = []
         for lx0, lx1, ly in lines:
             placed = False
@@ -218,9 +234,18 @@ def table_regions(pdf_path: str, pages: list[int] | None = None) -> dict[int, li
                 _pw = doc[pno].rect.width
                 _gap = ly - max(t[2] for t in g)
                 _wmis = ((lx1 - lx0) > _pw * 0.6) != ((gx1 - gx0) > _pw * 0.6)
+                _gbot = max(t[2] for t in g)
+                # 사이 구간에 같은 x대 문장형 줄이 있으면 다른 구조 (본문·캡션 개입).
+                # 단, 그룹이 이미 전폭일 때만 (좁은 표는 기존 동작 유지).
+                _sx0, _sx1 = min(gx0, lx0), max(gx1, lx1)
+                _sent = ((_sx1 - _sx0) > _pw * 0.6
+                         and any(sy0 < ly and sy1 > _gbot
+                                 and min(sx1, _sx1) - max(sx0, _sx0) > (sx1 - sx0) * 0.5
+                                 for sx0, sy0, sx1, sy1 in sent_lines))
                 if (ov > 0.5 * min(lx1 - lx0, gx1 - gx0)
                         and _gap <= 120
-                        and not (_wmis and _gap > 40)):
+                        and not (_wmis and _gap > 40)
+                        and not _sent):
                     g.append((lx0, lx1, ly))
                     placed = True
                     break
@@ -544,7 +569,10 @@ def merge_line_fragments(blocks: list[Block],
                 cross = any(cur.bbox[2] < x < b.bbox[0] for x in rulings[pno])
             if (abs(cy1 - cy0) <= max(3.0, hmin * 0.6) and -40 <= xgap <= 40
                     and same_font and not cross
-                    and len(cur.text) + len(b.text) <= 600):
+                    and len(cur.text) + len(b.text) <= 600
+                    # 수식 줄과 본문 줄 혼합 금지 (같은 행 본문 조각 결합은 허용).
+                    and not (_is_equation_display(cur.text) != _is_equation_display(b.text))
+                    and not _is_math_frag(cur.text) and not _is_math_frag(b.text)):
                 x0 = min(cur.bbox[0], b.bbox[0])
                 y0 = min(cur.bbox[1], b.bbox[1])
                 x1 = max(cur.bbox[2], b.bbox[2])
@@ -607,6 +635,104 @@ def slide_ruling_boxes(pdf_path: str, pages: list[int] | None = None) -> dict[in
     return _slide_vlines(pdf_path, pages)
 
 
+def band_presplit(pdf_path: str, blocks: list[Block],
+                  bands: dict[int, list] | None,
+                  regs: dict[int, list] | None = None) -> list[Block]:
+    """수식 밴드·표 경계를 가로지르는 블록을 분할 (상/하 본문 + 밴드/표 조각).
+
+    본문 박스가 수식 줄·표 내부를 포함하면 렌더 한글이 덮는다.
+    경계 상하에 본문 줄이 모두 있을 때만 분할 (그 외는 그대로).
+    표는 x 겹침까지 확인 (옆 열 본문은 분할 제외).
+    """
+    if not bands and not regs:
+        return blocks
+    import pymupdf as _pm
+    doc = _pm.open(pdf_path)
+    out: list[Block] = []
+    for b in blocks:
+        try:
+            bl = [r for r in (bands.get(b.page, []) if bands else [])
+                  if b.bbox[1] + 2 < r[0] and r[1] < b.bbox[3] - 2]
+            rl = [r for r in (regs.get(b.page, []) if regs else [])
+                  if b.bbox[1] + 2 < r[3] and r[3] < b.bbox[3] - 2]
+            if not bl and not rl:
+                out.append(b)
+                continue
+            page = doc[b.page]
+            lines = []
+            for lb in page.get_text("rawdict")["blocks"]:
+                if lb["type"] != 0:
+                    continue
+                for l in lb["lines"]:
+                    spans = l["spans"]
+                    if not spans:
+                        continue
+                    ly0 = min(s["bbox"][1] for s in spans)
+                    ly1 = max(s["bbox"][3] for s in spans)
+                    if ly1 < b.bbox[1] or ly0 > b.bbox[3]:
+                        continue
+                    chars = [c for s in spans for c in s.get("chars", [])]
+                    if chars:
+                        t = "".join(c["c"] for c in chars).strip()
+                        xs = [(c["bbox"][0] + c["bbox"][2]) / 2 for c in chars]
+                    else:
+                        t = "".join(s.get("text", "") for s in spans).strip()
+                        xs = []
+                    if t:
+                        lines.append((ly0, ly1, t, xs))
+            lines.sort(key=lambda t: (t[0], t[1]))
+
+            def _inzone(ly0, ly1, xs) -> bool:
+                cy = (ly0 + ly1) / 2
+                if bands and any(by0 - 2 <= cy <= by1 + 2 for by0, by1 in bands.get(b.page, [])):
+                    return True
+                if regs and xs:
+                    for rx0, ry0, rx1, ry1 in regs.get(b.page, []):
+                        if ry0 - 2 <= cy <= ry1 + 2:
+                            inw = sum(1 for x in xs if rx0 - 2 <= x <= rx1 + 2) / len(xs)
+                            if inw >= 0.5:
+                                return True
+                return False
+
+            # 밴드별 상/하 본문 존재 확인
+            segs: list[list] = []
+            cur: list = []
+            cur_in = None
+            for ly0, ly1, t, xs in lines:
+                inb = _inzone(ly0, ly1, xs)
+                if cur_in is None or inb == cur_in:
+                    cur.append((ly0, ly1, t, xs))
+                else:
+                    segs.append((cur_in, cur))
+                    cur = [(ly0, ly1, t, xs)]
+                cur_in = inb
+            if cur:
+                segs.append((cur_in, cur))
+            body_segs = [s for inb, s in segs if not inb]
+            if not body_segs or not any(s for inb, s in segs if inb):
+                out.append(b)
+                continue
+            for inb, s in segs:
+                # 조각 박스는 포함 줄의 x 범위로 (부모 전폭 사용 시 표 덮음).
+                _xx = [x for _, _, _, xs in s for x in xs]
+                if _xx:
+                    xs0, xs1 = min(_xx) - 2, max(_xx) + 2
+                else:
+                    xs0, xs1 = b.bbox[0], b.bbox[2]
+                ys0 = min(t[0] for t in s)
+                ys1 = max(t[1] for t in s)
+                tx = dehyphenate(" ".join(t[2] for t in s)).strip()
+                tx = normalize_ligatures(tx)
+                if len(tx) < 5:
+                    continue
+                out.append(Block(page=b.page, bbox=(xs0, ys0, xs1, ys1), text=tx,
+                                 fontsize=b.fontsize, is_bold=b.is_bold, line_rights=()))
+        except Exception:
+            out.append(b)
+    doc.close()
+    return out
+
+
 def split_row_blocks(pdf_path: str, blocks: list[Block],
                      boxes: dict[int, list[tuple]] | None = None,
                      col_gap: float = 0.0,
@@ -658,21 +784,23 @@ def split_row_blocks(pdf_path: str, blocks: list[Block],
                     if min(ry1, b.bbox[3]) - max(ry0, b.bbox[1]) < bh * 0.5:
                         continue
                     cuts.add(x)
-            # 표 영역 경계 (표와 겹치는 줄 전용)
+            # 표 영역 경계 (표와 겹치는 줄 전용). 겹침이 얕으면 절단 금지.
             if col_gap > 0:
                 if regs:
                     for rx0, ry0, rx1, ry1 in regs.get(b.page, []):
-                        if ry1 < b.bbox[1] or ry0 > b.bbox[3]:
+                        _ov = min(ry1, b.bbox[3]) - max(ry0, b.bbox[1])
+                        if _ov < 20 or _ov < (b.bbox[3] - b.bbox[1]) * 0.2:
                             continue
                         for ex in (rx0, rx1):
                             if b.bbox[0] + 10 < ex < b.bbox[2] - 10:
                                 reg_cuts.add(round(ex, 1))
-                # (b) 줄별 내부 공백 기준 절단
+                # (b) 줄별 내부 공백 기준 절단 (임계값은 폰트 비례: 큰 글자 자간 오인 방지)
+                _gap_thr = max(col_gap, b.fontsize * 1.2)
                 for ly0, ly1, cs in lines:
                     xs = sorted((c["bbox"][0] + c["bbox"][2]) / 2 for c in cs)
                     for a, cc in zip(xs, xs[1:]):
                         mid = (a + cc) / 2
-                        if cc - a > col_gap and b.bbox[0] + 10 < mid < b.bbox[2] - 10:
+                        if cc - a > _gap_thr and b.bbox[0] + 10 < mid < b.bbox[2] - 10:
                             cuts.add(round(mid, 1))
                 # (c) 절단 없음 + 넓은 블록: 줄 군집 분리 (수식 줄 제외).
                 # 순수 좌/우 열 줄이 2개 이상씩 있을 때만 (진짜 2단).
@@ -911,27 +1039,46 @@ def equation_bands(pdf_path: str, pages: list[int] | None = None) -> dict[int, l
                 alllines.append(l)
         alllines.sort(key=lambda l: (l["bbox"][1], l["bbox"][0]))
         prev = None
-        for l in alllines:
+        for li, l in enumerate(alllines):
             t = "".join(s["text"] for s in l["spans"]).strip()
             m = re.search(r"\(\s*(\d+)\s*([a-c]?)\)\s*$", t)
             if m and int(m.group(1)) <= 200 and len(t) < 250:
                 lx0, ly0, lx1, ly1 = l["bbox"]
                 if ly1 - ly0 <= 40:
-                    # 번호 위 연속 수식 줄도 함께 보호 (15px 이내)
+                    # 번호 위 연속 수식 줄도 함께 보호 (여러 줄遡及, 15px 간격).
+                    # 이웃 줄은 짧고(math frag) 수식스러울 때만 (본문 꼬리 제외).
                     top = ly0
-                    if prev is not None:
-                        pt = "".join(s["text"] for s in prev["spans"]).strip()
-                        px0, py0, px1, py1 = prev["bbox"]
+                    j = li - 1
+                    while j >= 0:
+                        pl = alllines[j]
+                        pt = "".join(s["text"] for s in pl["spans"]).strip()
+                        px0, py0, px1, py1 = pl["bbox"]
                         mathy = ("=" in pt or re.search(r"[≜≡≈∼<>≤≥∑∏∫∂√∞λΔσπμγα-ω]", pt)
                                  or sum(1 for c in pt if not c.isalnum() and not c.isspace()
                                         and c not in ".,;:!?\"'“”‘’—–-") / max(1, len(pt)) > 0.3)
-                        if (ly0 - py1 <= 15 and mathy and len(pt) < 150
+                        if not (top - py1 <= 15 and mathy and len(pt) < 35
                                 and py1 - py0 <= 40):
-                            top = py0
+                            break
+                        top = py0
+                        j -= 1
+                    bot = ly1
+                    j = li + 1
+                    while j < len(alllines):
+                        pl = alllines[j]
+                        pt = "".join(s["text"] for s in pl["spans"]).strip()
+                        px0, py0, px1, py1 = pl["bbox"]
+                        mathy = ("=" in pt or re.search(r"[≜≡≈∼<>≤≥∑∏∫∂√∞λΔσπμγα-ω]", pt)
+                                 or sum(1 for c in pt if not c.isalnum() and not c.isspace()
+                                        and c not in ".,;:!?\"'“”‘’—–-") / max(1, len(pt)) > 0.3)
+                        if not (py0 - bot <= 12 and (mathy or len(pt) < 10)
+                                and len(pt) < 35 and py1 - py0 <= 40):
+                            break
+                        bot = py1
+                        j += 1
                     if bands and top - bands[-1][1] <= 12:
-                        bands[-1][1] = max(bands[-1][1], ly1)
+                        bands[-1][1] = max(bands[-1][1], bot)
                     else:
-                        bands.append([top, ly1])
+                        bands.append([top, bot])
             prev = l
         if bands:
             out[pno] = bands
@@ -1000,7 +1147,15 @@ def _is_math_frag(t: str) -> bool:
     return bool(re.search(r"[≜≡≈∼<>≤≥∑∏∫∂√∞λΔσπμγα-ω+\-*/^_=ˆ~|&%$#@()±°]", s))
 
 
-def merge_dangling(blocks: list[Block]) -> list[Block]:
+def merge_dangling(blocks: list[Block], bands: dict[int, list] | None = None,
+                   table_regs: dict[int, list] | None = None) -> list[Block]:
+    """짧은 매달림 조각을 이전 블록에 병합 (논문용).
+
+    조건: 같은 페이지 + 이전 블록 바로 아래(간격 0~40) + x 겹침 40% + 폰트 유사.
+    체크리스트·수식 잔줄 같은 짧은 조각이 통째로 번역되게 한다.
+    bands: 수식 밴드 사이 병합 금지 (분리된 상/하 재결합 방지).
+    table_regs: 표 내부와 본문 병합 금지 (표 제거 시 본문 동반 소실 방지).
+    """
     """짧은 매달림 조각을 이전 블록에 병합 (논문용).
 
     조건: 같은 페이지 + 이전 블록 바로 아래(간격 0~40) + x 겹침 40% + 폰트 유사.
@@ -1049,13 +1204,28 @@ def merge_dangling(blocks: list[Block]) -> list[Block]:
                     and not _is_equation_display(b.text)
                     and not _is_math_frag(b.text)
                     and b.text.lower() not in KNOWN_HEADERS
-                    and re.search(r"[a-z]{3}", cur.text[-15:])
+                    and (re.search(r"[a-z]{3}", cur.text[-15:])
+                         or (cur.fontsize >= 13 and b.fontsize >= 13))
                     and (re.match(r"^[a-z가-힣]", b.text)
                          or b.bbox[0] <= cur.bbox[0] + 10)):
                 gap = b.bbox[1] - cur.bbox[3]
                 _cyy = abs((cur.bbox[1] + cur.bbox[3] - b.bbox[1] - b.bbox[3]) / 2)
                 # 같은 시각 행이면 열 무관하게 같은 흐름 (중복 추출 결합)
-                same_col = _same_flow(cur, b) or _cyy <= 5.0
+                # 큰 글자 좌측 정렬 연속행도 같은 흐름 (다단 제목 결합)
+                _title_cont = (cur.fontsize >= 13 and b.fontsize >= 13
+                               and abs(cur.bbox[0] - b.bbox[0]) <= 10
+                               and 0 <= gap <= 10)
+                same_col = _same_flow(cur, b) or _cyy <= 5.0 or _title_cont
+                # 수식 밴드를 가로지르는 병합 금지
+                if bands and b.page in bands:
+                    if any(cur.bbox[3] < by0 and b.bbox[1] > by1
+                           for by0, by1 in bands[b.page]):
+                        same_col = False
+                # 표 내부와 본문 병합 금지 (표 제거 시 본문 동반 소실 방지)
+                if same_col and table_regs and b.page in table_regs:
+                    if (in_table_region(cur.bbox, table_regs[b.page])
+                            != in_table_region(b.bbox, table_regs[b.page])):
+                        same_col = False
                 # 짧은 조각은 가까울 때만 흡수 (먼 조각은 문맥 번역으로 별도 처리)
                 # 겹침(음수 gap)은 하한 없이 병합 (같은 흐름 조각)
                 max_gap = 25 if len(b.text) < 80 else 60
@@ -1125,7 +1295,7 @@ def is_resume_header(t: str) -> bool:
     s = t.strip()
     if len(s) >= 80:
         return False
-    if re.match(r"^(\d+(\.\d+)*|[A-Z](\.\d+)+|Appendix)\s*[A-Z]", s):
+    if re.match(r"^(\d+(\.\d+)*|[A-Z](\.\d+)+|Appendix)\s*(?![A-Z]\s)(?![A-Z][^A-Za-z])[A-Z]", s):
         return True
     if (len(s) >= 4 and re.match(r"^[A-Z]{2,}[A-Z ]", s) and s == s.upper()
             and not re.search(r"\d", s)):
@@ -1521,54 +1691,83 @@ def deoverlap_cands(cands: list[Block]) -> list[Block]:
                 hmin = min(ay1 - ay0, cy1 - cy0)
                 if hmin <= 0:
                     continue
-                if ih >= hmin * 0.65:
-                    # 깊은 겹침(포함형): y순으로 텍스트를 합쳐 단일 박스로.
-                    # 이중 추출된 동일 흐름의 조각으로 보고 경계 중복만 제거.
-                    # 분기 헤더(참고문헌·섹션)는 합병 제외, 겹침 밖으로 이동.
-                    if (_is_branch_header(items[i]["text"])
-                            or _is_branch_header(items[j]["text"])):
-                        hi = i if _is_branch_header(items[i]["text"]) else j
-                        oi = j if hi == i else i
-                        hb = items[hi]["box"]
-                        ob = items[oi]["box"]
-                        hh = hb[3] - hb[1]
-                        # 가까운 쪽 가장자리로 이동
-                        if (hb[1] + hb[3]) / 2 < (ob[1] + ob[3]) / 2:
-                            nb1 = min(hb[3], ob[1] - 2)
-                            items[hi]["box"] = [hb[0], max(0.0, nb1 - hh), hb[2], nb1]
-                        else:
-                            nb0 = max(hb[1], ob[3] + 2)
-                            items[hi]["box"] = [hb[0], nb0, hb[2], nb0 + hh]
-                        continue
+                if ih < hmin * 0.65:
+                    # 엇겹침을 반씩 나눔 (위 블록 아래를 올리고, 아래 블록 위를 내림)
+                    mid = (max(ay0, cy0) + min(ay1, cy1)) / 2
                     if ay0 <= cy0:
-                        keep, absorbee = i, j
+                        items[i]["box"][3] = min(ay1, mid - 1)
+                        items[j]["box"][1] = max(cy0, mid + 1)
                     else:
-                        keep, absorbee = j, i
-                    kb = items[keep]["box"]
-                    ab = items[absorbee]["box"]
-                    ux0 = min(kb[0], ab[0])
-                    uy0 = min(kb[1], ab[1])
-                    ux1 = max(kb[2], ab[2])
-                    uy1 = max(kb[3], ab[3])
-                    # y순 연결 (위 텍스트가 먼저)
-                    if items[i]["box"][1] <= items[j]["box"][1]:
-                        first, second = items[i]["text"], items[j]["text"]
-                    else:
-                        first, second = items[j]["text"], items[i]["text"]
-                    items[keep]["box"] = [ux0, uy0, ux1, uy1]
-                    items[keep]["text"] = _join_texts(first, second)
-                    items[keep]["line_rights"] = (
-                        items[keep]["line_rights"] + items[absorbee]["line_rights"])
-                    items[absorbee]["dropped"] = True
+                        items[j]["box"][3] = min(cy1, mid - 1)
+                        items[i]["box"][1] = max(ay0, mid + 1)
                     continue
-                # 엇겹침을 반씩 나눔 (위 블록 아래를 올리고, 아래 블록 위를 내림)
-                mid = (max(ay0, cy0) + min(ay1, cy1)) / 2
-                if ay0 <= cy0:
-                    items[i]["box"][3] = min(ay1, mid - 1)
-                    items[j]["box"][1] = max(cy0, mid + 1)
+                # 깊은 겹침(포함형): 분기 헤더는 겹침 밖으로 이동.
+                if (_is_branch_header(items[i]["text"])
+                        or _is_branch_header(items[j]["text"])):
+                    hi = i if _is_branch_header(items[i]["text"]) else j
+                    oi = j if hi == i else i
+                    hb = items[hi]["box"]
+                    ob = items[oi]["box"]
+                    hh = hb[3] - hb[1]
+                    # 가까운 쪽 가장자리로 이동
+                    if (hb[1] + hb[3]) / 2 < (ob[1] + ob[3]) / 2:
+                        nb1 = min(hb[3], ob[1] - 2)
+                        items[hi]["box"] = [hb[0], max(0.0, nb1 - hh), hb[2], nb1]
+                    else:
+                        nb0 = max(hb[1], ob[3] + 2)
+                        items[hi]["box"] = [hb[0], nb0, hb[2], nb0 + hh]
+                    continue
+                # 깊은 겹침: 경계 중복이 실제로 제거될 때만 합병 (가짜 병합 방지).
+                if items[i]["box"][1] <= items[j]["box"][1]:
+                    first, second = items[i]["text"], items[j]["text"]
                 else:
-                    items[j]["box"][3] = min(cy1, mid - 1)
-                    items[i]["box"][1] = max(ay0, mid + 1)
+                    first, second = items[j]["text"], items[i]["text"]
+                _joined = _join_texts(first, second)
+                if len(first) + len(second) - len(_joined) < 30:
+                    # 중복 없음: 작은 박스는 유지, 큰 박스(컨테이너)를 겹침 밖으로 축소.
+                    # (컨테이너 텍스트는 유지, 폰트만 축소. 절반 미만 남으면 유지.)
+                    # 포함 관계가 아니면 엇겹침처럼 반씩 나눔.
+                    ai = i if (ay1 - ay0) * (ax1 - ax0) <= (cy1 - cy0) * (cx1 - cx0) else j
+                    oi = j if ai == i else i
+                    ab = items[ai]["box"]
+                    ob = items[oi]["box"]
+                    if ab[1] >= ob[1] - 5 and ab[3] <= ob[3] + 5:
+                        _above = ab[1] - ob[1]
+                        _below = ob[3] - ab[3]
+                        if _above >= _below:
+                            nb1 = min(ob[3], ab[1] - 2)
+                            if nb1 - ob[1] >= (ob[3] - ob[1]) * 0.5:
+                                items[oi]["box"][3] = nb1
+                        else:
+                            nb0 = max(ob[1], ab[3] + 2)
+                            if ob[3] - nb0 >= (ob[3] - ob[1]) * 0.5:
+                                items[oi]["box"][1] = nb0
+                        continue
+                    mid = (max(ay0, cy0) + min(ay1, cy1)) / 2
+                    if ay0 <= cy0:
+                        items[i]["box"][3] = min(ay1, mid - 1)
+                        items[j]["box"][1] = max(cy0, mid + 1)
+                    else:
+                        items[j]["box"][3] = min(cy1, mid - 1)
+                        items[i]["box"][1] = max(ay0, mid + 1)
+                    continue
+                if ay0 <= cy0:
+                    keep, absorbee = i, j
+                else:
+                    keep, absorbee = j, i
+                kb = items[keep]["box"]
+                ab = items[absorbee]["box"]
+                ux0 = min(kb[0], ab[0])
+                uy0 = min(kb[1], ab[1])
+                ux1 = max(kb[2], ab[2])
+                uy1 = max(kb[3], ab[3])
+                # y순 연결 (위 텍스트가 먼저)
+                items[keep]["box"] = [ux0, uy0, ux1, uy1]
+                items[keep]["text"] = _joined
+                items[keep]["line_rights"] = (
+                    items[keep]["line_rights"] + items[absorbee]["line_rights"])
+                items[absorbee]["dropped"] = True
+                continue
         for it in items:
             if it["dropped"]:
                 continue
@@ -1602,7 +1801,7 @@ def refilter(blocks: list[Block], skip_rects: dict[int, list] | None = None,
                 if len(b.text) < 150:
                     drop = True
         # 표 x범위 안에 있고 내부를 가로선이 관통하면 표 본문 (길이 무관 제거).
-        # 단, 캡션/헤더는 보호.
+        # 단, 캡션/헤더는 보호. 문장형 본문이 걸쳤을 때는 유지 (표 아래 본문).
         if (not drop and table_regs and b.page in table_regs
                 and rulings and b.page in rulings
                 and not _is_header_like(b.text.strip())):
@@ -1614,9 +1813,15 @@ def refilter(blocks: list[Block], skip_rects: dict[int, list] | None = None,
                 inside = [ly for lx0, lx1, ly in hl
                           if y0 + 5 < ly < y1 - 5
                           and min(lx1, x1) - max(lx0, x0) > (x1 - x0) * 0.5]
-                if inside:
-                    drop = True
-                    break
+                if not inside:
+                    continue
+                _t = b.text.strip()
+                _sent = any(sum(c.islower() for c in _t[i:i + 60]) >= 20
+                            for i in range(0, max(1, len(_t) - 60), 20))
+                if _sent:
+                    continue
+                drop = True
+                break
         if not drop:
             out.append(b)
     return out

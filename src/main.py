@@ -104,11 +104,15 @@ def main() -> None:
         blocks = split_row_blocks(args.input, blocks, slide_ruling_boxes(args.input, pages))
     else:
         from src.extractor import merge_dangling as _md
-        blocks = _md(blocks)
+        from src.extractor import band_presplit as _bp
+        blocks = _md(blocks, None, regs)
         from src.extractor import refilter, split_row_blocks
+        _eb3 = ebands
+        blocks = _bp(args.input, blocks, _eb3, regs)
         blocks = split_row_blocks(args.input, blocks, col_gap=12.0, regs=regs)
+        blocks = _bp(args.input, blocks, _eb3, regs)
         blocks = refilter(blocks, skip, rules, regs)
-        blocks = _md(blocks)
+        blocks = _md(blocks, _eb3, regs)
     from src.extractor import drop_contained
     blocks = drop_contained(blocks)
     cands = [b for b in blocks if should_translate(b.text, b.fontsize, kind, b.page)]
